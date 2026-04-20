@@ -40,6 +40,8 @@ export default function AdminLogin() {
         name: String(result.admin.name || "Admin"),
         email: String(result.admin.email || email.trim().toLowerCase()),
         role: "Admin",
+        token: String(result.token || ""),
+        csrfToken: String(result.csrfToken || ""),
       });
 
       navigate("/admin", { replace: true });

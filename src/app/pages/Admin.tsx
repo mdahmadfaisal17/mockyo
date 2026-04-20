@@ -306,6 +306,7 @@ function AnalyticsPanel() {
 		(typeof window !== "undefined"
 			? `${window.location.protocol === "https:" ? "https:" : "http:"}//${window.location.hostname}:5000/api`
 			: "http://localhost:5000/api");
+	const adminSession = readAdminSession();
 	const [data, setData] = useState<AnalyticsData | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
@@ -313,6 +314,7 @@ function AnalyticsPanel() {
 	useEffect(() => {
 		fetch(`${apiBaseUrl}/analytics/overview`, {
 			credentials: "include",
+			headers: adminSession?.token ? { Authorization: `Bearer ${adminSession.token}` } : {},
 		})
 			.then((r) => r.json())
 			.then((json) => {
@@ -321,7 +323,7 @@ function AnalyticsPanel() {
 			})
 			.catch(() => setError("Failed to connect to analytics service."))
 			.finally(() => setLoading(false));
-	}, [apiBaseUrl]);
+	}, [apiBaseUrl, adminSession?.token]);
 
 	const formatDuration = (seconds: number) => {
 		const m = Math.floor(seconds / 60);
@@ -431,7 +433,8 @@ export default function Admin() {
 			? `${window.location.protocol === "https:" ? "https:" : "http:"}//${window.location.hostname}:5000/api`
 			: "http://localhost:5000/api");
 	const navigate = useNavigate();
-	const [adminCsrfToken, setAdminCsrfToken] = useState("");
+	const adminSession = readAdminSession();
+	const [adminCsrfToken, setAdminCsrfToken] = useState(adminSession?.csrfToken || "");
 	const readCookieValue = (key: string) => {
 		if (typeof document === "undefined") return "";
 
@@ -444,13 +447,10 @@ export default function Admin() {
 	};
 	const getAdminHeaders = () => {
 		const token = adminCsrfToken || readCookieValue("mockyo_admin_csrf");
-		if (!token) {
-			return {} as Record<string, string>;
-		}
-
-		return {
-			"X-CSRF-Token": token,
-		};
+		const headers: Record<string, string> = {};
+		if (token) headers["X-CSRF-Token"] = token;
+		if (adminSession?.token) headers.Authorization = `Bearer ${adminSession.token}`;
+		return headers;
 	};
 	const [view, setView] = useState<View>("dashboard");
 	const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -719,6 +719,7 @@ export default function Admin() {
 			try {
 				const response = await fetch(`${apiBaseUrl}/auth/admin/csrf-token`, {
 					credentials: "include",
+					headers: getAdminHeaders(),
 				});
 				const result = await response.json().catch(() => null);
 

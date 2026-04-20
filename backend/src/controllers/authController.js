@@ -295,6 +295,8 @@ export const adminLogin = asyncHandler(async (req, res) => {
 
   res.json({
     ok: true,
+    token,
+    csrfToken,
     admin: {
       id: user._id,
       name: user.name,
@@ -327,7 +329,9 @@ export const userLogout = asyncHandler(async (_req, res) => {
 });
 
 export const issueAdminCsrfToken = asyncHandler(async (_req, res) => {
-  const token = readCookie(_req.headers.cookie, ADMIN_AUTH_COOKIE);
+  const authHeader = String(_req.headers["authorization"] || "");
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const token = bearerToken || readCookie(_req.headers.cookie, ADMIN_AUTH_COOKIE);
   if (!token) {
     const error = new Error("Admin authentication is required.");
     error.statusCode = 401;

@@ -3,6 +3,8 @@ export type AdminSession = {
   name: string;
   email: string;
   role: "Admin";
+  token?: string;
+  csrfToken?: string;
 };
 
 const ADMIN_AUTH_STORAGE_KEY = "mockyo.admin.auth";
