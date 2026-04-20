@@ -1522,7 +1522,13 @@ export default function Editor() {
             </button>
 
             {isExportMenuOpen ? (
-              <div className="absolute right-0 top-[calc(100%+8px)] z-20 w-[260px] rounded-lg border border-white/10 bg-[#171722] p-3 shadow-[0_16px_35px_rgba(0,0,0,0.35)]">
+              <>
+                {/* Mobile/tablet backdrop */}
+                <div
+                  className="fixed inset-0 z-[49] lg:hidden"
+                  onClick={() => setIsExportMenuOpen(false)}
+                />
+              <div className="fixed left-1/2 top-1/2 z-[50] w-[280px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-white/10 bg-[#171722] p-4 shadow-[0_24px_60px_rgba(0,0,0,0.6)] lg:absolute lg:left-auto lg:top-[calc(100%+8px)] lg:translate-x-0 lg:translate-y-0 lg:right-0 lg:w-[260px] lg:rounded-lg lg:p-3 lg:shadow-[0_16px_35px_rgba(0,0,0,0.35)]">
                 <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-zinc-400">Format</p>
                 <div className="mb-4 grid grid-cols-2 gap-2">
                   <button
@@ -1576,6 +1582,7 @@ export default function Editor() {
                   {isDownloading ? "Downloading…" : "Download"}
                 </button>
               </div>
+              </>
             ) : null}
             </div>
           </div>
@@ -2505,7 +2512,7 @@ export default function Editor() {
                   <button
                     key={mockup.id}
                     type="button"
-                    onClick={() => navigate(`/editor/${mockup.id}`)}
+                    onClick={() => { navigate(`/editor/${mockup.id}`); setMobilePanel(null); }}
                     className={`w-full overflow-hidden rounded-lg border text-left transition-colors ${
                       id === mockup.id
                         ? "border-primary/70 bg-primary/10"
