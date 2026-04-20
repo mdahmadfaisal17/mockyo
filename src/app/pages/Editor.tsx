@@ -960,6 +960,7 @@ export default function Editor() {
   };
 
   const handleArtboardMouseDown = (e: React.PointerEvent) => {
+    if (window.innerWidth < 1024) return;
     isDragging.current = true;
     dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, posX: artboardPos.x, posY: artboardPos.y };
     e.preventDefault();
