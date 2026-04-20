@@ -26,7 +26,7 @@ const readCookie = (cookieHeader, key) => {
 const getAdminCookieOptions = () => ({
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
-  sameSite: "strict",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
   maxAge: 8 * 60 * 60 * 1000,
   path: "/",
 });
@@ -34,7 +34,7 @@ const getAdminCookieOptions = () => ({
 const getAdminCsrfCookieOptions = () => ({
   httpOnly: false,
   secure: process.env.NODE_ENV === "production",
-  sameSite: "strict",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
   maxAge: 8 * 60 * 60 * 1000,
   path: "/",
 });
@@ -42,7 +42,7 @@ const getAdminCsrfCookieOptions = () => ({
 const getUserCookieOptions = () => ({
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
-  sameSite: "lax",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
   maxAge: 7 * 24 * 60 * 60 * 1000,
   path: "/",
 });
