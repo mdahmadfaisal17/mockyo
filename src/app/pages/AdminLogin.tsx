@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { ShieldCheck, Lock, Mail, Eye, EyeOff } from "lucide-react";
-import { readAdminSession, writeAdminSession } from "../imports/adminAuthStore";
+import { writeAdminSession } from "../imports/adminAuthStore";
 import mockyoLogo from "../../assets/mockyo-logo.svg";
 
 export default function AdminLogin() {
@@ -11,8 +11,7 @@ export default function AdminLogin() {
       ? `${window.location.protocol === "https:" ? "https:" : "http:"}//${window.location.hostname}:5000/api`
       : "http://localhost:5000/api");
   const navigate = useNavigate();
-  const existingAdmin = readAdminSession();
-  const [email, setEmail] = useState(existingAdmin?.email || "");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -72,7 +71,7 @@ export default function AdminLogin() {
                 required
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                placeholder="mdahmadfaisal17@gmail.com"
+                placeholder="Enter email"
                 className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none"
               />
             </div>
