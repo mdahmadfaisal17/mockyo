@@ -139,6 +139,11 @@ export default function Editor() {
   const designScaleStart = useRef({ distance: 0, scale: 1, areaUrl: "", designId: "" });
   const isRotatingDesign = useRef(false);
   const designRotateStart = useRef({ angle: 0, rotation: 0, areaUrl: "", designId: "" });
+  const activePinchPointers = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const isPinching = useRef(false);
+  const pinchStartDistance = useRef(0);
+  const pinchStartScale = useRef(1);
+  const pinchDesignId = useRef("");
   const normalizedDesignIdsRef = useRef<Set<string>>(new Set());
 
   const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
@@ -739,15 +744,30 @@ export default function Editor() {
     const transform = getDesignTransform(designId);
     setSelectedDesignAreaUrl(areaUrl);
     setSelectedDesignId(designId);
-    isDraggingDesign.current = true;
-    designDragStart.current = {
-      mouseX: e.clientX,
-      mouseY: e.clientY,
-      x: transform.x,
-      y: transform.y,
-      areaUrl,
-      designId,
-    };
+
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+    activePinchPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (activePinchPointers.current.size >= 2) {
+      isDraggingDesign.current = false;
+      isPinching.current = true;
+      pinchDesignId.current = designId;
+      const pts = [...activePinchPointers.current.values()];
+      pinchStartDistance.current = Math.max(Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y), 1);
+      pinchStartScale.current = transform.scale;
+    } else {
+      isPinching.current = false;
+      isDraggingDesign.current = true;
+      designDragStart.current = {
+        mouseX: e.clientX,
+        mouseY: e.clientY,
+        x: transform.x,
+        y: transform.y,
+        areaUrl,
+        designId,
+      };
+    }
+
     e.stopPropagation();
     e.preventDefault();
   };
@@ -979,7 +999,24 @@ export default function Editor() {
   };
 
   useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
+    const onMouseMove = (e: PointerEvent) => {
+      activePinchPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (isPinching.current) {
+        const pts = [...activePinchPointers.current.values()];
+        if (pts.length >= 2) {
+          const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+          const ratio = dist / Math.max(pinchStartDistance.current, 1);
+          const nextScale = clamp(pinchStartScale.current * ratio, MIN_DESIGN_SCALE, 3);
+          const did = pinchDesignId.current;
+          setDesignTransformById((prev) => {
+            const current = prev[did] ?? defaultDesignTransform;
+            return { ...prev, [did]: { ...current, scale: nextScale } };
+          });
+        }
+        return;
+      }
+
       if (isScalingDesign.current) {
         const designId = designScaleStart.current.designId;
         const currentDistance = Math.max(getDistanceFromCenter(e.clientX, e.clientY), 1);
@@ -1081,7 +1118,9 @@ export default function Editor() {
       const dy = e.clientY - dragStart.current.mouseY;
       setArtboardPos({ x: dragStart.current.posX + dx, y: dragStart.current.posY + dy });
     };
-    const onMouseUp = () => {
+    const onMouseUp = (e: PointerEvent) => {
+      activePinchPointers.current.delete(e.pointerId);
+      if (activePinchPointers.current.size < 2) isPinching.current = false;
       isDragging.current = false;
       isDraggingDesign.current = false;
       isScalingDesign.current = false;
@@ -1093,9 +1132,11 @@ export default function Editor() {
     };
     window.addEventListener("pointermove", onMouseMove);
     window.addEventListener("pointerup", onMouseUp);
+    window.addEventListener("pointercancel", onMouseUp);
     return () => {
       window.removeEventListener("pointermove", onMouseMove);
       window.removeEventListener("pointerup", onMouseUp);
+      window.removeEventListener("pointercancel", onMouseUp);
     };
   }, []);
 
@@ -1539,6 +1580,7 @@ export default function Editor() {
             </div>
           </div>
         </div>
+
       </section>
 
       <div className="relative z-10 flex flex-col lg:flex-row gap-3.5" style={{ isolation: "isolate" }}>
@@ -1806,6 +1848,7 @@ export default function Editor() {
               transformOrigin: "center center",
               isolation: "isolate",
               overflow: "hidden",
+              touchAction: "none",
               backgroundColor: artboardBgColor || "#ffffff",
               height: layers.length === 0 ? "600px" : "auto",
             }}
@@ -1891,6 +1934,7 @@ export default function Editor() {
                         pointerEvents: "auto",
                         cursor: selectedDesignId === design.id ? "move" : "pointer",
                         userSelect: "none",
+                        touchAction: "none",
                         transform: `translate(-50%, -50%) translate(${localOffset?.x ?? transform.x}px, ${localOffset?.y ?? transform.y}px) scale(${transform.scale}) rotate(${transform.rotation}deg)`,
                         transformOrigin: "center center",
                       }}
@@ -2056,7 +2100,7 @@ export default function Editor() {
                     </>
                   ) : null}
 
-                  <div
+                    <div
                     onPointerDown={(e) => handleDesignPreviewMouseDown(e, selectedDesignAreaUrl, selectedDesignId)}
                     style={{
                       position: "absolute",
@@ -2064,6 +2108,7 @@ export default function Editor() {
                       border: "1.5px dashed rgba(255,107,53,0.9)",
                       boxShadow: "0 0 0 1px rgba(255,107,53,0.18)",
                       cursor: "move",
+                      touchAction: "none",
                       pointerEvents: "auto",
                     }}
                   />
@@ -2162,14 +2207,15 @@ export default function Editor() {
                     }}
                     style={{
                       position: "absolute",
-                      bottom: -8,
-                      right: -8,
-                      width: 16,
-                      height: 16,
-                      borderRadius: 2,
+                      bottom: -12,
+                      right: -12,
+                      width: 24,
+                      height: 24,
+                      borderRadius: 4,
                       background: "#FF6B35",
                       border: "1.5px solid #fff",
                       cursor: "nwse-resize",
+                      touchAction: "none",
                       pointerEvents: "auto",
                     }}
                   />
@@ -2183,14 +2229,15 @@ export default function Editor() {
                     }}
                     style={{
                       position: "absolute",
-                      bottom: -8,
-                      left: -8,
-                      width: 16,
-                      height: 16,
-                      borderRadius: 2,
+                      bottom: -12,
+                      left: -12,
+                      width: 24,
+                      height: 24,
+                      borderRadius: 4,
                       background: "#FF6B35",
                       border: "1.5px solid #fff",
                       cursor: "nesw-resize",
+                      touchAction: "none",
                       pointerEvents: "auto",
                     }}
                   />
