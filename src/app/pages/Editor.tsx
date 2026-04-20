@@ -1410,7 +1410,7 @@ export default function Editor() {
   };
 
   return (
-    <div className="relative min-h-[calc(100vh-73px)] overflow-hidden bg-background px-4 pb-4 pt-2 md:px-6 md:pb-4 md:pt-2 lg:px-8 lg:pb-8 lg:pt-3">
+    <div className="relative min-h-[calc(100vh-73px)] overflow-hidden bg-background px-4 pb-20 pt-2 md:px-6 md:pb-20 md:pt-2 lg:px-8 lg:pb-8 lg:pt-3">
       <div className="absolute inset-0 hero-bg" />
       <div className="absolute inset-0 hero-grid-bg" />
 
@@ -1539,30 +1539,6 @@ export default function Editor() {
           </div>
         </div>
       </section>
-
-      {/* Mobile Top Bar */}
-      <div className="relative z-[60] mb-3.5 flex h-12 items-center justify-around rounded-xl border border-white/10 bg-[#16161F] px-4 shadow-[0_4px_20px_rgba(0,0,0,0.4)] lg:hidden">
-        <button
-          type="button"
-          onClick={() => setMobilePanel(mobilePanel === "left" ? null : "left")}
-          className={`flex items-center gap-2 rounded-lg px-6 py-2 text-xs font-medium transition ${
-            mobilePanel === "left" ? "text-primary" : "text-zinc-400"
-          }`}
-        >
-          <Upload className="h-4 w-4" />
-          <span>Upload</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setMobilePanel(mobilePanel === "right" ? null : "right")}
-          className={`flex items-center gap-2 rounded-lg px-6 py-2 text-xs font-medium transition ${
-            mobilePanel === "right" ? "text-primary" : "text-zinc-400"
-          }`}
-        >
-          <Search className="h-4 w-4" />
-          <span>Browse</span>
-        </button>
-      </div>
 
       <div className="relative z-10 flex flex-col lg:flex-row gap-3.5" style={{ isolation: "isolate" }}>
         {/* Left Panel */}
@@ -2828,6 +2804,29 @@ export default function Editor() {
       ) : null}
 
 
+      {/* Mobile Bottom Bar */}
+      <div className="fixed bottom-0 left-0 right-0 z-[60] flex h-14 items-center justify-around border-t border-white/10 bg-[#16161F] px-4 shadow-[0_-4px_20px_rgba(0,0,0,0.4)] lg:hidden">
+        <button
+          type="button"
+          onClick={() => setMobilePanel(mobilePanel === "left" ? null : "left")}
+          className={`flex flex-col items-center gap-1 rounded-lg px-8 py-2 text-[10px] transition ${
+            mobilePanel === "left" ? "text-primary" : "text-zinc-400"
+          }`}
+        >
+          <Upload className="h-5 w-5" />
+          <span>Upload</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobilePanel(mobilePanel === "right" ? null : "right")}
+          className={`flex flex-col items-center gap-1 rounded-lg px-8 py-2 text-[10px] transition ${
+            mobilePanel === "right" ? "text-primary" : "text-zinc-400"
+          }`}
+        >
+          <Search className="h-5 w-5" />
+          <span>Browse</span>
+        </button>
+      </div>
     </div>
   );
 }
