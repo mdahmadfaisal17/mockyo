@@ -1,0 +1,17 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B0B12" />
+      <stop offset="1" stop-color="#171727" />
+    </linearGradient>
+    <linearGradient id="brand" x1="210" y1="230" x2="520" y2="350" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF6A26" />
+      <stop offset="1" stop-color="#ED9F41" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <rect x="130" y="165" width="940" height="300" rx="28" fill="#0F0F1A" stroke="#26263A" />
+  <path d="M274 228H366C382.569 228 396 241.431 396 258V278C396 288.493 408.94 293.559 416.06 285.851L447.94 251.149C453.608 244.974 461.686 241.45 470.02 241.45H476C492.569 241.45 506 254.882 506 271.45V358C506 374.569 492.569 388 476 388H470.02C461.686 388 453.608 384.476 447.94 378.301L416.06 343.599C408.94 335.891 396 340.957 396 351.45V371C396 387.569 382.569 401 366 401H274C257.431 401 244 387.569 244 371V258C244 241.431 257.431 228 274 228Z" fill="url(#brand)"/>
+  <text x="560" y="320" fill="#F4F4FA" font-family="Segoe UI, Arial, sans-serif" font-size="92" font-weight="700">Mockyo</text>
+  <text x="560" y="378" fill="#B8B8C8" font-family="Segoe UI, Arial, sans-serif" font-size="34">Free Mockup Editor and Downloads</text>
+</svg>

@@ -1,0 +1,15 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* Review marquee rail (Home page) */
+@keyframes home-review-rail {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.home-review-rail-track {
+  animation: home-review-rail 75s linear infinite;
+}
+.home-review-rail-wrapper:hover .home-review-rail-track {
+  animation-play-state: paused;
+}
