@@ -2947,8 +2947,9 @@ export default function Admin() {
 			<section className="space-y-6">
 				<div className="flex flex-wrap items-start justify-between gap-4 rounded-xl border border-white/8 bg-[#16161F] p-6 shadow-[0_12px_30px_rgba(0,0,0,0.18)]">
 					<div>
-						<h2 className="text-2xl font-semibold text-zinc-100">Add Product</h2>
-						<p className="mt-2 text-sm text-zinc-400">Set up your layers and preview the composition before moving to the next step.</p>
+						<p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#FF6B35]">Step 1 of 2</p>
+						<h2 className="mt-1 text-2xl font-semibold text-zinc-100">{editingProductId ? "Edit Product" : "Add Product"}</h2>
+						<p className="mt-1 text-sm text-zinc-400">Set up your layers and preview the composition before moving to the next step.</p>
 					</div>
 					<div className="flex items-center gap-3">
 						<button

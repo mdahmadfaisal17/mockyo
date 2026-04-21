@@ -1,6 +1,7 @@
 import { lazy } from "react";
 import { createBrowserRouter } from "react-router";
 import Layout from "./components/Layout";
+import ErrorPage from "./pages/ErrorPage";
 
 // Eagerly load the landing page for instant first paint
 import Home from "./pages/Home";
@@ -28,6 +29,7 @@ export const router = createBrowserRouter([
   {
     path: "/",
     Component: Layout,
+    errorElement: <ErrorPage />,
     children: [
       { index: true, Component: Home },
       { path: "mockups", Component: Mockups },
@@ -50,10 +52,12 @@ export const router = createBrowserRouter([
   {
     path: "/admin",
     Component: AdminRouteGuard,
+    errorElement: <ErrorPage />,
     children: [{ index: true, Component: Admin }],
   },
   {
     path: "/admin-login",
     Component: AdminLogin,
+    errorElement: <ErrorPage />,
   },
 ]);

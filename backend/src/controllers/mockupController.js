@@ -25,6 +25,14 @@ const slugify = (value) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 
+const sanitizeFilename = (value) => {
+  return String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*]/g, "")
+    .replace(/[\s]+/g, " ")
+    .substring(0, 200) || "download";
+};
+
 const toAssetItem = async (file, folder, labelPrefix) => {
   const safeName = slugify(file.originalname.replace(/\.[^.]+$/, "")) || "asset";
   const uploaded = await uploadBufferToCloudinary(
@@ -661,7 +669,8 @@ export const getDownloadPresignedUrl = asyncHandler(async (req, res) => {
   }
 
   try {
-    const presignedData = await getR2PresignedUrl(objectKey, mockup.title);
+    const fileName = `${sanitizeFilename(mockup.title)}.psd`;
+    const presignedData = await getR2PresignedUrl(objectKey, fileName);
     if (!presignedData) {
       const error = new Error("Failed to generate download URL.");
       error.statusCode = 502;
@@ -771,7 +780,7 @@ export const downloadFile = asyncHandler(async (req, res) => {
       );
     }
 
-    const safeFilename = r2Object.fileName.replace(/[^\w.\-]/g, "_") || "download";
+    const safeFilename = `${sanitizeFilename(mockupForDownload.title)}.psd`;
     res.setHeader("Content-Type", r2Object.contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${safeFilename}"`);
     if (r2Object.contentLength !== null) res.setHeader("Content-Length", r2Object.contentLength);
