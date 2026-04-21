@@ -5,6 +5,7 @@ import MockupCard from "../components/MockupCard";
 import CategoryDropdown from "../components/CategoryDropdown";
 import SortDropdown from "../components/SortDropdown";
 import { getAllMockups } from "../imports/mockupStore";
+import { fetchJsonWithRetry } from "../lib/apiRetry";
 
 type CategoryHierarchy = Record<string, Record<string, string[]>>;
 
@@ -94,8 +95,11 @@ export default function Mockups() {
   useEffect(() => {
     const loadMockups = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/mockups`);
-        const result = await response.json();
+        const { response, json: result } = await fetchJsonWithRetry(
+          `${apiBaseUrl}/mockups`,
+          undefined,
+          { retries: 2, retryDelayMs: 350 },
+        );
 
         if (!response.ok || !result?.ok || !Array.isArray(result.items)) {
           throw new Error(result?.message || "Failed to load mockups.");
@@ -129,7 +133,7 @@ export default function Mockups() {
 
         setMockups(mapped);
       } catch {
-        setMockups(getAllMockups());
+        // Keep existing items instead of clearing UI during temporary API errors.
       }
     };
 

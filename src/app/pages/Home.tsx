@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { ArrowRight, Download, Edit, Mail, Palette, Quote, Search, Star, Upload } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import MockupCard from "../components/MockupCard";
+import { fetchJsonWithRetry } from "../lib/apiRetry";
 
 const ADMIN_CATEGORY_STORAGE_KEY = "mockyo.admin.category-config";
 
@@ -101,10 +102,12 @@ export default function Home() {
   useEffect(() => {
     const loadApprovedReviews = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/reviews`);
-        const result = await response.json().catch(() => null);
+        const { response, json: result } = await fetchJsonWithRetry(
+          `${apiBaseUrl}/reviews`,
+          undefined,
+          { retries: 2, retryDelayMs: 350 },
+        );
         if (!response.ok || !result?.ok || !Array.isArray(result.items)) {
-          setApprovedReviews([]);
           return;
         }
 
@@ -118,7 +121,7 @@ export default function Home() {
 
         setApprovedReviews(mapped);
       } catch {
-        setApprovedReviews([]);
+        // Keep the previous reviews list when API is temporarily unavailable.
       }
     };
 
@@ -129,8 +132,11 @@ export default function Home() {
     const loadHeroStats = async () => {
       try {
         // Fetch all mockups to get all unique categories
-        const response = await fetch(`${apiBaseUrl}/mockups?limit=1000`);
-        const result = await response.json();
+        const { response, json: result } = await fetchJsonWithRetry(
+          `${apiBaseUrl}/mockups?limit=1000`,
+          undefined,
+          { retries: 2, retryDelayMs: 350 },
+        );
 
         if (!response.ok || !result?.ok || !Array.isArray(result.items)) {
           return;
@@ -156,8 +162,11 @@ export default function Home() {
         // Use whichever source reports more categories to avoid undercounting.
         let categoriesFromAdmin = readAdminCategoryCount();
         try {
-          const categoryResponse = await fetch(`${apiBaseUrl}/categories/config`);
-          const categoryResult = await categoryResponse.json().catch(() => null);
+          const { response: categoryResponse, json: categoryResult } = await fetchJsonWithRetry(
+            `${apiBaseUrl}/categories/config`,
+            undefined,
+            { retries: 1, retryDelayMs: 300 },
+          );
           if (categoryResponse.ok && categoryResult?.ok && categoryResult.hierarchy) {
             const remoteCount = countCategoriesFromHierarchy(categoryResult.hierarchy as CategoryHierarchy);
             categoriesFromAdmin = Math.max(categoriesFromAdmin, remoteCount);

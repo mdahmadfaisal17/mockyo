@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import { Download, Edit3, FileImage, MonitorSmartphone, SquarePen } from "lucide-react";
 import MockupCard from "../components/MockupCard";
 import { getAllMockups } from "../imports/mockupStore";
+import { fetchJsonWithRetry } from "../lib/apiRetry";
 import { applySeo, removeJsonLdMany, toAbsoluteSeoUrl, upsertJsonLd } from "../lib/seo";
 
 export default function ProductDetails() {
@@ -23,8 +24,11 @@ export default function ProductDetails() {
   useEffect(() => {
     const loadMockups = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/mockups`);
-        const result = await response.json();
+        const { response, json: result } = await fetchJsonWithRetry(
+          `${apiBaseUrl}/mockups`,
+          undefined,
+          { retries: 2, retryDelayMs: 350 },
+        );
 
         if (!response.ok || !result?.ok || !Array.isArray(result.items)) {
           throw new Error(result?.message || "Failed to load mockups.");
@@ -44,7 +48,7 @@ export default function ProductDetails() {
 
         setMockups(mapped);
       } catch {
-        setMockups(getAllMockups());
+        // Keep existing items instead of clearing UI during temporary API errors.
       }
     };
 
@@ -56,8 +60,11 @@ export default function ProductDetails() {
     if (!id) return;
     const loadProduct = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/mockups/${id}`);
-        const result = await response.json();
+        const { response, json: result } = await fetchJsonWithRetry(
+          `${apiBaseUrl}/mockups/${id}`,
+          undefined,
+          { retries: 2, retryDelayMs: 350 },
+        );
         if (!response.ok || !result?.ok || !result.item) return;
         const thumbs: string[] = Array.isArray(result.item.thumbnails)
           ? result.item.thumbnails.map((t: any) => t.url).filter(Boolean)

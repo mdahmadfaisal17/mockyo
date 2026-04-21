@@ -3,6 +3,7 @@ import { Quote, Star, X } from "lucide-react";
 import { FormEvent, useMemo, useState, useEffect } from "react";
 import { readAuthUser } from "../imports/authStore";
 import { openAuthModal } from "../imports/authModalStore";
+import { fetchJsonWithRetry } from "../lib/apiRetry";
 
 type ReviewItem = {
   id: string;
@@ -53,8 +54,11 @@ export default function Reviews() {
   useEffect(() => {
     const loadApprovedReviews = async () => {
       try {
-        const response = await fetch(`${apiBaseUrl}/reviews`);
-        const result = await response.json().catch(() => null);
+        const { response, json: result } = await fetchJsonWithRetry(
+          `${apiBaseUrl}/reviews`,
+          undefined,
+          { retries: 2, retryDelayMs: 350 },
+        );
         if (response.ok && result?.ok && Array.isArray(result.items)) {
           const mapped = result.items.map((item: any) => ({
             id: String(item._id || item.id || ""),
@@ -68,7 +72,7 @@ export default function Reviews() {
           return;
         }
       } catch {
-        setApprovedReviews([]);
+        // Keep existing reviews instead of showing an empty state during brief outages.
       }
     };
 
