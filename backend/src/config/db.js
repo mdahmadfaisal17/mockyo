@@ -4,7 +4,7 @@ const connectDatabase = async () => {
   const mongoUri = process.env.MONGODB_URI;
   const maxRetries = Number(process.env.MONGODB_CONNECT_RETRIES || 3);
   const serverSelectionTimeoutMS = Number(
-    process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS || 15000,
+    process.env.MONGODB_SERVER_SELECTION_TIMEOUT_MS || 5000,
   );
 
   if (!mongoUri) {
