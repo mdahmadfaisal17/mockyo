@@ -6,6 +6,7 @@ import MockupCard from "../components/MockupCard";
 import { fetchJsonWithRetry } from "../lib/apiRetry";
 
 const ADMIN_CATEGORY_STORAGE_KEY = "mockyo.admin.category-config";
+const HOME_CACHE_STORAGE_KEY = "mockyo.home.cache";
 
 type CategoryHierarchy = Record<string, Record<string, string[]>>;
 
@@ -24,6 +25,40 @@ type TrendingMockup = {
   mainCategory: string;
   category: string;
   downloads: number;
+};
+
+type HomeCache = {
+  approvedReviews?: ApprovedReview[];
+  heroStats?: {
+    mockups: number;
+    downloads: number;
+    categories: number;
+  };
+  trendingMockups?: TrendingMockup[];
+};
+
+const readHomeCache = (): HomeCache => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(HOME_CACHE_STORAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as HomeCache;
+  } catch {
+    return {};
+  }
+};
+
+const writeHomeCache = (patch: HomeCache) => {
+  if (typeof window === "undefined") return;
+  try {
+    const current = readHomeCache();
+    window.localStorage.setItem(
+      HOME_CACHE_STORAGE_KEY,
+      JSON.stringify({ ...current, ...patch }),
+    );
+  } catch {
+    // Cache writes should never block the live page.
+  }
 };
 
 const countCategoriesFromHierarchy = (hierarchy: CategoryHierarchy): number => {
@@ -88,14 +123,22 @@ export default function Home() {
       ? `${window.location.protocol === "https:" ? "https:" : "http:"}//${window.location.hostname}:5000/api`
       : "http://localhost:5000/api");
   const initialAdminCategoryCount = readAdminCategoryCount();
+  const homeCache = useMemo(() => readHomeCache(), []);
   const [email, setEmail] = useState("");
-  const [trendingMockups, setTrendingMockups] = useState<TrendingMockup[]>([]);
-  const [approvedReviews, setApprovedReviews] = useState<ApprovedReview[]>([]);
-  const [heroStats, setHeroStats] = useState({
-    mockups: 0,
-    downloads: 0,
-    categories: initialAdminCategoryCount || 0,
-  });
+  const [trendingMockups, setTrendingMockups] = useState<TrendingMockup[]>(
+    () => homeCache.trendingMockups || [],
+  );
+  const [approvedReviews, setApprovedReviews] = useState<ApprovedReview[]>(
+    () => homeCache.approvedReviews || [],
+  );
+  const [heroStats, setHeroStats] = useState(
+    () =>
+      homeCache.heroStats || {
+        mockups: 0,
+        downloads: 0,
+        categories: initialAdminCategoryCount || 0,
+      },
+  );
 
   const heroRating = useMemo(() => {
     if (approvedReviews.length === 0) return "0.0";
@@ -129,6 +172,7 @@ export default function Home() {
         }));
 
         setApprovedReviews(mapped);
+        writeHomeCache({ approvedReviews: mapped });
       } catch {
         // Keep the previous reviews list when API is temporarily unavailable.
       }
@@ -193,12 +237,17 @@ export default function Home() {
         ).size;
         const categories = Math.max(categoriesFromAdmin, categoriesFromMockups);
 
-        setHeroStats((prev) => ({ ...prev, mockups, downloads, categories }));
-        setTrendingMockups(
-          mapped
-            .sort((a, b) => b.downloads - a.downloads)
-            .slice(0, 6),
-        );
+        const nextHeroStats = { mockups, downloads, categories };
+        const nextTrendingMockups = [...mapped]
+          .sort((a, b) => b.downloads - a.downloads)
+          .slice(0, 6);
+
+        setHeroStats((prev) => ({ ...prev, ...nextHeroStats }));
+        setTrendingMockups(nextTrendingMockups);
+        writeHomeCache({
+          heroStats: nextHeroStats,
+          trendingMockups: nextTrendingMockups,
+        });
       } catch {
         // Keep fallback stats from featured list.
       }

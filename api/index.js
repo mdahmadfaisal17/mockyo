@@ -27,7 +27,10 @@ const prepareBackend = async () => {
       assertSecurityConfiguration();
       connectCloudinary();
       await connectDatabase();
-    })();
+    })().catch((error) => {
+      readyPromise = null;
+      throw error;
+    });
   }
 
   return readyPromise;
