@@ -17,6 +17,15 @@ type ApprovedReview = {
   submittedAt: number;
 };
 
+type TrendingMockup = {
+  id: string;
+  image: string;
+  title: string;
+  mainCategory: string;
+  category: string;
+  downloads: number;
+};
+
 const countCategoriesFromHierarchy = (hierarchy: CategoryHierarchy): number => {
   const uniqueCategoryKeys = new Set<string>();
 
@@ -80,7 +89,7 @@ export default function Home() {
       : "http://localhost:5000/api");
   const initialAdminCategoryCount = readAdminCategoryCount();
   const [email, setEmail] = useState("");
-  const [trendingMockups, setTrendingMockups] = useState<any[]>([]);
+  const [trendingMockups, setTrendingMockups] = useState<TrendingMockup[]>([]);
   const [approvedReviews, setApprovedReviews] = useState<ApprovedReview[]>([]);
   const [heroStats, setHeroStats] = useState({
     mockups: 0,
@@ -111,7 +120,7 @@ export default function Home() {
           return;
         }
 
-        const mapped = result.items.map((item: any) => ({
+        const mapped: ApprovedReview[] = result.items.map((item: any) => ({
           id: String(item._id || item.id || ""),
           name: String(item.name || "Unknown"),
           rating: Number(item.rating) || 0,
@@ -142,7 +151,7 @@ export default function Home() {
           return;
         }
 
-        const mapped = result.items.map((item: any) => ({
+        const mapped: TrendingMockup[] = result.items.map((item: any) => ({
           id: item._id,
           image:
             item.thumbnails?.[0]?.url ||
@@ -156,7 +165,7 @@ export default function Home() {
 
         const mockups = mapped.length;
         const downloads = mapped.reduce(
-          (sum: number, item: any) => sum + (Number(item.downloads) || 0),
+          (sum, item) => sum + (Number(item.downloads) || 0),
           0,
         );
         // Use whichever source reports more categories to avoid undercounting.
