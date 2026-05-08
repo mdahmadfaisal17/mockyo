@@ -7,11 +7,11 @@ dist/
 
 # Environment variables (NEVER commit these)
 .env
-.env.local
-.env.*.local
+.env.*
 backend/.env
-backend/.env.local
-backend/.env.*.local
+backend/.env.*
+!.env.example
+!backend/.env.example
 
 # Log files
 *.log

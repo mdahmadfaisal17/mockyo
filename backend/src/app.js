@@ -94,7 +94,10 @@ const xmlEscape = (value) =>
 
 app.get("/sitemap.xml", async (_req, res) => {
   const siteUrl = String(
-    process.env.SITE_URL || process.env.CLIENT_URL?.split(",")?.[0] || "https://mockyo.com",
+    process.env.SITE_URL ||
+      process.env.FRONTEND_URL ||
+      process.env.CLIENT_URL?.split(",")?.[0] ||
+      "https://mockyo.com",
   )
     .trim()
     .replace(/\/+$/, "");
