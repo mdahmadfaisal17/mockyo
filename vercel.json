@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/sitemap.xml",
-      "destination": "/api/index.js"
+      "destination": "https://mockyo.onrender.com/sitemap.xml"
     },
     {
       "source": "/api/(.*)",
