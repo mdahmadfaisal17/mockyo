@@ -18,6 +18,34 @@ const normalizeOrigin = (value) => String(value || "").trim().replace(/\/+$/, ""
 const localDevOriginPattern = /^https?:\/\/(?:(?:localhost|127(?:\.\d{1,3}){3})|(?:10(?:\.\d{1,3}){3})|(?:192\.168(?:\.\d{1,3}){2})|(?:172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2}))(?::\d+)?$/;
 const isAllowedLocalDevOrigin = (origin) =>
   process.env.NODE_ENV !== "production" && localDevOriginPattern.test(normalizeOrigin(origin));
+const getOriginVariants = (origin) => {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return [];
+
+  try {
+    const url = new URL(normalized);
+    const variants = [normalized];
+    if (url.hostname.startsWith("www.")) {
+      url.hostname = url.hostname.slice(4);
+      variants.push(normalizeOrigin(url.toString()));
+    } else {
+      url.hostname = `www.${url.hostname}`;
+      variants.push(normalizeOrigin(url.toString()));
+    }
+    return variants;
+  } catch {
+    return [normalized];
+  }
+};
+const getConfiguredOrigins = () =>
+  [
+    process.env.CLIENT_URL || "http://localhost:5173",
+    process.env.FRONTEND_URL,
+    process.env.SITE_URL,
+  ]
+    .flatMap((value) => String(value || "").split(","))
+    .flatMap(getOriginVariants)
+    .filter(Boolean);
 
 app.use(helmet());
 
@@ -42,10 +70,7 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
-  .split(",")
-  .map((origin) => normalizeOrigin(origin))
-  .filter(Boolean);
+const allowedOrigins = getConfiguredOrigins();
 
 if (!allowedOrigins.includes(normalizeOrigin("http://localhost:5174"))) {
   allowedOrigins.push(normalizeOrigin("http://localhost:5174"));
