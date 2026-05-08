@@ -35,24 +35,6 @@ const normalizeLabel = (value: string) => value.trim().replace(/\s+/g, " ");
 
 const normalizeCompare = (value: string) => normalizeLabel(value).toLowerCase();
 
-const searchSynonyms: Record<string, string[]> = {
-  woman: ["women", "female", "ladies", "lady"],
-  women: ["woman", "female", "ladies", "lady"],
-  lady: ["ladies", "woman", "women", "female"],
-  ladies: ["lady", "woman", "women", "female"],
-  tshirt: ["t-shirt", "t shirt", "tee"],
-  tee: ["tshirt", "t-shirt", "t shirt"],
-  hoodie: ["hoddie", "hodie", "hood"],
-  hoddie: ["hoodie", "hodie", "hood"],
-  hodie: ["hoodie", "hoddie", "hood"],
-  sleeve: ["sleev", "sleeve less", "sleeveless"],
-  sleev: ["sleeve", "sleeve less", "sleeveless"],
-  sleeveless: ["sleeve less", "sleeve"],
-  oversized: ["oversize", "over size"],
-  mockup: ["mockups", "mockp"],
-  mockp: ["mockup", "mockups"],
-};
-
 const normalizeSearchText = (value: string) =>
   String(value || "")
     .toLowerCase()
@@ -62,27 +44,25 @@ const normalizeSearchText = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-const expandSearchText = (value: string) => {
-  const normalized = normalizeSearchText(value);
-  const terms = new Set<string>([normalized]);
-
-  normalized.split(" ").forEach((term) => {
-    if (!term) return;
-    terms.add(term);
-    searchSynonyms[term]?.forEach((synonym) => terms.add(normalizeSearchText(synonym)));
-  });
-
-  return Array.from(terms).filter(Boolean).join(" ");
-};
-
 const buildSearchText = (item: {
   title?: string;
   category?: string;
   mainCategory?: string;
   description?: string;
+  searchText?: string;
+  searchTerms?: string[];
 }) =>
-  expandSearchText(
-    [item.title, item.category, item.mainCategory, item.description].filter(Boolean).join(" "),
+  normalizeSearchText(
+    [
+      item.searchText,
+      Array.isArray(item.searchTerms) ? item.searchTerms.join(" ") : "",
+      item.title,
+      item.category,
+      item.mainCategory,
+      item.description,
+    ]
+      .filter(Boolean)
+      .join(" "),
   );
 
 const mergeUniqueLabels = (...groups: Array<string[] | undefined>) => {
@@ -261,7 +241,7 @@ export default function Mockups() {
 
   const filteredMockups = useMemo(() => {
     const categoryMatches = mockups.filter(matchesSelectedCategory);
-    const normalizedQuery = expandSearchText(searchQuery);
+    const normalizedQuery = normalizeSearchText(searchQuery);
 
     if (!normalizedQuery) {
       return sortMockups(categoryMatches);

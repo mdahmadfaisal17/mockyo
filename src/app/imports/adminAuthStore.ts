@@ -3,7 +3,6 @@ export type AdminSession = {
   name: string;
   email: string;
   role: "Admin";
-  token?: string;
   csrfToken?: string;
 };
 

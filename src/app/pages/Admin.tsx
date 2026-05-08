@@ -314,7 +314,6 @@ function AnalyticsPanel() {
 	useEffect(() => {
 		fetch(`${apiBaseUrl}/analytics/overview`, {
 			credentials: "include",
-			headers: adminSession?.token ? { Authorization: `Bearer ${adminSession.token}` } : {},
 		})
 			.then((r) => r.json())
 			.then((json) => {
@@ -323,7 +322,7 @@ function AnalyticsPanel() {
 			})
 			.catch(() => setError("Failed to connect to analytics service."))
 			.finally(() => setLoading(false));
-	}, [apiBaseUrl, adminSession?.token]);
+	}, [apiBaseUrl]);
 
 	const formatDuration = (seconds: number) => {
 		const m = Math.floor(seconds / 60);
@@ -449,7 +448,6 @@ export default function Admin() {
 		const token = adminCsrfToken || readCookieValue("mockyo_admin_csrf");
 		const headers: Record<string, string> = {};
 		if (token) headers["X-CSRF-Token"] = token;
-		if (adminSession?.token) headers.Authorization = `Bearer ${adminSession.token}`;
 		return headers;
 	};
 	const [view, setView] = useState<View>("dashboard");
@@ -948,7 +946,10 @@ export default function Admin() {
 	useEffect(() => {
 		const loadProducts = async () => {
 			try {
-				const response = await fetch(`${apiBaseUrl}/mockups`);
+				const response = await fetch(`${apiBaseUrl}/mockups`, {
+					credentials: "include",
+					headers: getAdminHeaders(),
+				});
 				const result = await response.json();
 
 				if (!response.ok || !result?.ok || !Array.isArray(result.items)) {
@@ -1219,7 +1220,10 @@ export default function Admin() {
 		};
 
 		try {
-			const res = await fetch(`${apiBaseUrl}/mockups/${product.id}`);
+			const res = await fetch(`${apiBaseUrl}/mockups/${product.id}`, {
+			credentials: "include",
+			headers: getAdminHeaders(),
+		});
 			const result = await res.json();
 			const item = result?.item;
 

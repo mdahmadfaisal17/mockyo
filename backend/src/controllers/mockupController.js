@@ -62,6 +62,7 @@ const parseBlendModes = (input) => {
 };
 
 const USER_AUTH_COOKIE = "mockyo_user_token";
+const ADMIN_AUTH_COOKIE = "mockyo_admin_token";
 
 const readCookie = (cookieHeader, key) => {
   const target = `${key}=`;
@@ -70,6 +71,20 @@ const readCookie = (cookieHeader, key) => {
     .map((part) => part.trim())
     .find((part) => part.startsWith(target))
     ?.slice(target.length) || "";
+};
+
+const isAdminRequest = (req) => {
+  const authHeader = String(req.headers["authorization"] || "");
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const cookieToken = readCookie(req.headers.cookie, ADMIN_AUTH_COOKIE);
+  const token = bearerToken || cookieToken;
+  if (!token) return false;
+  try {
+    const decoded = jwt.verify(token, String(process.env.JWT_SECRET || ""));
+    return decoded?.role === "Admin";
+  } catch {
+    return false;
+  }
 };
 
 const getAuthenticatedUserEmailFromRequest = (req) => {
@@ -85,22 +100,33 @@ const getAuthenticatedUserEmailFromRequest = (req) => {
   }
 };
 
-export const getMockups = asyncHandler(async (_req, res) => {
+export const getMockups = asyncHandler(async (req, res) => {
   ensureDatabaseReady();
-  const mockups = await Mockup.find().sort({ createdAt: -1 });
+  if (isAdminRequest(req)) {
+    const mockups = await Mockup.find().sort({ createdAt: -1 });
+    return res.json({ ok: true, items: mockups });
+  }
+  const mockups = await Mockup.find({ status: "published" }).select("-objectKey").sort({ createdAt: -1 });
   res.json({ ok: true, items: mockups });
 });
 
 export const getMockupById = asyncHandler(async (req, res) => {
   ensureDatabaseReady();
-  const mockup = await Mockup.findById(req.params.id);
-
+  if (isAdminRequest(req)) {
+    const mockup = await Mockup.findById(req.params.id);
+    if (!mockup) {
+      const error = new Error("Mockup not found.");
+      error.statusCode = 404;
+      throw error;
+    }
+    return res.json({ ok: true, item: mockup });
+  }
+  const mockup = await Mockup.findOne({ _id: req.params.id, status: "published" }).select("-objectKey");
   if (!mockup) {
     const error = new Error("Mockup not found.");
     error.statusCode = 404;
     throw error;
   }
-
   res.json({ ok: true, item: mockup });
 });
 

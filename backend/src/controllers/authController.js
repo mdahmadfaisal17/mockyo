@@ -295,7 +295,6 @@ export const adminLogin = asyncHandler(async (req, res) => {
 
   res.json({
     ok: true,
-    token,
     csrfToken,
     admin: {
       id: user._id,

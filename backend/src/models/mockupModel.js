@@ -1,5 +1,63 @@
 import mongoose from "mongoose";
 
+const synonymMap = {
+  woman: ["women", "female", "ladies", "lady"],
+  women: ["woman", "female", "ladies", "lady"],
+  lady: ["ladies", "woman", "women", "female"],
+  ladies: ["lady", "woman", "women", "female"],
+  child: ["children", "kid", "kids", "toddler", "baby", "boy", "boys", "girl", "girls", "youth"],
+  children: ["child", "kid", "kids", "toddler", "baby", "boy", "boys", "girl", "girls", "youth"],
+  kid: ["kids", "child", "children", "toddler", "baby", "boy", "boys", "girl", "girls", "youth"],
+  kids: ["kid", "child", "children", "toddler", "baby", "boy", "boys", "girl", "girls", "youth"],
+  toddler: ["child", "children", "kid", "kids", "baby"],
+  baby: ["child", "children", "kid", "kids", "toddler"],
+  boy: ["boys", "child", "children", "kid", "kids"],
+  boys: ["boy", "child", "children", "kid", "kids"],
+  girl: ["girls", "child", "children", "kid", "kids"],
+  girls: ["girl", "child", "children", "kid", "kids"],
+  youth: ["child", "children", "kid", "kids"],
+  tshirt: ["t-shirt", "t shirt", "tee"],
+  tee: ["tshirt", "t-shirt", "t shirt"],
+  hoodie: ["hoddie", "hodie", "hood"],
+  hoddie: ["hoodie", "hodie", "hood"],
+  hodie: ["hoodie", "hoddie", "hood"],
+  sleeve: ["sleev", "sleeve less", "sleeveless"],
+  sleev: ["sleeve", "sleeve less", "sleeveless"],
+  sleeveless: ["sleeve less", "sleeve"],
+  oversized: ["oversize", "over size"],
+  mockup: ["mockups", "mockp"],
+  mockp: ["mockup", "mockups"],
+};
+
+const normalizeSearchText = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/t[\s-]?shirt/g, "tshirt")
+    .replace(/sleeve[\s-]?less/g, "sleeveless")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const buildSearchPayload = (parts = []) => {
+  const combined = normalizeSearchText(parts.filter(Boolean).join(" "));
+  const termSet = new Set();
+
+  combined.split(" ").forEach((term) => {
+    if (!term) return;
+    termSet.add(term);
+    (synonymMap[term] || []).forEach((synonym) => {
+      const normalized = normalizeSearchText(synonym);
+      if (normalized) termSet.add(normalized);
+    });
+  });
+
+  const searchTerms = Array.from(termSet);
+  return {
+    searchTerms,
+    searchText: searchTerms.join(" "),
+  };
+};
+
 const assetSchema = new mongoose.Schema(
   {
     label: { type: String, required: true },
@@ -67,6 +125,8 @@ const mockupSchema = new mongoose.Schema(
     category: { type: String, required: true, trim: true },
     mainCategory: { type: String, default: "Apparel", trim: true },
     description: { type: String, default: "" },
+    searchTerms: { type: [String], default: [] },
+    searchText: { type: String, default: "" },
     thumbnails: { type: [assetSchema], default: [] },
     artboardLayers: { type: [artboardLayerSchema], default: [] },
     designAreaImages: { type: [designAreaAssetSchema], default: [] },
@@ -102,6 +162,19 @@ const mockupSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+mockupSchema.pre("validate", function (next) {
+  const payload = buildSearchPayload([
+    this.title,
+    this.category,
+    this.mainCategory,
+    this.description,
+  ]);
+
+  this.searchTerms = payload.searchTerms;
+  this.searchText = payload.searchText;
+  next();
+});
 
 const Mockup = mongoose.model("Mockup", mockupSchema);
 
