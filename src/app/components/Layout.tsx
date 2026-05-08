@@ -3,7 +3,7 @@ import Header from "./Header";
 import Footer from "./Footer";
 import AuthModal from "./AuthModal";
 import GuestAccessModal from "./GuestAccessModal";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import PageLoader from "./PageLoader";
 import {
   applySeo,
@@ -12,6 +12,7 @@ import {
   removeJsonLd,
   upsertJsonLd,
 } from "../lib/seo";
+import { trackPageView } from "../lib/analytics";
 
 const pageSeo: Record<string, { title: string; description: string; keywords?: string }> = {
   "/": {
@@ -93,8 +94,9 @@ const breadcrumbLabelBySegment: Record<string, string> = {
 };
 
 export default function Layout() {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const showFooter = !pathname.startsWith("/editor");
+  const lastTrackedPathRef = useRef(`${pathname}${search}`);
 
   useEffect(() => {
     const normalizedPath = pathname.replace(/\/+$/, "") || "/";
@@ -185,6 +187,13 @@ export default function Layout() {
       itemListElement: breadcrumbItems,
     });
   }, [pathname]);
+
+  useEffect(() => {
+    const path = `${pathname}${search}`;
+    if (lastTrackedPathRef.current === path) return;
+    lastTrackedPathRef.current = path;
+    trackPageView(path);
+  }, [pathname, search]);
 
   return (
     <div className="min-h-screen flex flex-col">
