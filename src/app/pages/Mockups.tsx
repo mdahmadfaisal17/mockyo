@@ -1,5 +1,6 @@
 import { motion } from "motion/react";
-import { useEffect, useState } from "react";
+import Fuse from "fuse.js";
+import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import MockupCard from "../components/MockupCard";
 import CategoryDropdown from "../components/CategoryDropdown";
@@ -8,6 +9,18 @@ import { getAllMockups } from "../imports/mockupStore";
 import { fetchJsonWithRetry } from "../lib/apiRetry";
 
 type CategoryHierarchy = Record<string, Record<string, string[]>>;
+
+type MockupSearchItem = {
+  id: string;
+  image: string;
+  title: string;
+  category: string;
+  mainCategory: string;
+  description?: string;
+  downloads: number;
+  createdAt?: string;
+  searchText: string;
+};
 
 const defaultCategoryHierarchy: CategoryHierarchy = {
   Apparel: {
@@ -21,6 +34,56 @@ const adminCategoryStorageKey = "mockyo.admin.category-config";
 const normalizeLabel = (value: string) => value.trim().replace(/\s+/g, " ");
 
 const normalizeCompare = (value: string) => normalizeLabel(value).toLowerCase();
+
+const searchSynonyms: Record<string, string[]> = {
+  woman: ["women", "female", "ladies", "lady"],
+  women: ["woman", "female", "ladies", "lady"],
+  lady: ["ladies", "woman", "women", "female"],
+  ladies: ["lady", "woman", "women", "female"],
+  tshirt: ["t-shirt", "t shirt", "tee"],
+  tee: ["tshirt", "t-shirt", "t shirt"],
+  hoodie: ["hoddie", "hodie", "hood"],
+  hoddie: ["hoodie", "hodie", "hood"],
+  hodie: ["hoodie", "hoddie", "hood"],
+  sleeve: ["sleev", "sleeve less", "sleeveless"],
+  sleev: ["sleeve", "sleeve less", "sleeveless"],
+  sleeveless: ["sleeve less", "sleeve"],
+  oversized: ["oversize", "over size"],
+  mockup: ["mockups", "mockp"],
+  mockp: ["mockup", "mockups"],
+};
+
+const normalizeSearchText = (value: string) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/t[\s-]?shirt/g, "tshirt")
+    .replace(/sleeve[\s-]?less/g, "sleeveless")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const expandSearchText = (value: string) => {
+  const normalized = normalizeSearchText(value);
+  const terms = new Set<string>([normalized]);
+
+  normalized.split(" ").forEach((term) => {
+    if (!term) return;
+    terms.add(term);
+    searchSynonyms[term]?.forEach((synonym) => terms.add(normalizeSearchText(synonym)));
+  });
+
+  return Array.from(terms).filter(Boolean).join(" ");
+};
+
+const buildSearchText = (item: {
+  title?: string;
+  category?: string;
+  mainCategory?: string;
+  description?: string;
+}) =>
+  expandSearchText(
+    [item.title, item.category, item.mainCategory, item.description].filter(Boolean).join(" "),
+  );
 
 const mergeUniqueLabels = (...groups: Array<string[] | undefined>) => {
   const next: string[] = [];
@@ -73,7 +136,13 @@ export default function Mockups() {
   const [searchQuery, setSearchQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [sortBy, setSortBy] = useState("all");
-  const [mockups, setMockups] = useState(() => getAllMockups());
+  const [mockups, setMockups] = useState<MockupSearchItem[]>(() =>
+    getAllMockups().map((item) => ({
+      ...item,
+      description: "",
+      searchText: buildSearchText(item),
+    })),
+  );
   const [categoryHierarchy, setCategoryHierarchy] = useState<CategoryHierarchy>(
     defaultCategoryHierarchy,
   );
@@ -114,8 +183,10 @@ export default function Mockups() {
           title: item.title || "Untitled",
           category: item.category || "Uncategorized",
           mainCategory: item.mainCategory || "Apparel",
+          description: item.description || "",
           downloads: item.downloads ?? 0,
           createdAt: item.createdAt,
+          searchText: buildSearchText(item),
         }));
 
         const fetchedHierarchy = result.items.reduce((acc: CategoryHierarchy, item: any) => {
@@ -175,13 +246,8 @@ export default function Mockups() {
     return false;
   };
 
-  const filteredMockups = mockups
-    .filter((mockup) => {
-      const matchesSearch = mockup.title.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesCategory = matchesSelectedCategory(mockup);
-      return matchesSearch && matchesCategory;
-    })
-    .sort((a, b) => {
+  const sortMockups = (items: MockupSearchItem[]) =>
+    [...items].sort((a, b) => {
       if (sortBy === "all") return 0;
       if (sortBy === "popular") return b.downloads - a.downloads;
       if (sortBy === "latest") {
@@ -192,6 +258,32 @@ export default function Mockups() {
       if (sortBy === "downloads") return b.downloads - a.downloads;
       return 0;
     });
+
+  const filteredMockups = useMemo(() => {
+    const categoryMatches = mockups.filter(matchesSelectedCategory);
+    const normalizedQuery = expandSearchText(searchQuery);
+
+    if (!normalizedQuery) {
+      return sortMockups(categoryMatches);
+    }
+
+    const fuse = new Fuse(categoryMatches, {
+      keys: [
+        { name: "title", weight: 0.45 },
+        { name: "category", weight: 0.2 },
+        { name: "mainCategory", weight: 0.15 },
+        { name: "description", weight: 0.1 },
+        { name: "searchText", weight: 0.35 },
+      ],
+      threshold: 0.42,
+      distance: 120,
+      ignoreLocation: true,
+      minMatchCharLength: 2,
+    });
+
+    const results = fuse.search(normalizedQuery).map((result) => result.item);
+    return sortBy === "all" ? results : sortMockups(results);
+  }, [category, mockups, searchQuery, sortBy]);
 
   return (
     <div className="min-h-screen bg-background">
