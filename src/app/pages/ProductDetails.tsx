@@ -17,7 +17,7 @@ export default function ProductDetails() {
   const [mockups, setMockups] = useState(() => getAllMockups());
   const [productThumbnails, setProductThumbnails] = useState<string[]>([]);
   const [productDescription, setProductDescription] = useState<string>("");
-  const [objectKey, setObjectKey] = useState<string>("");
+  const [isDownloadEnabled, setIsDownloadEnabled] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
 
   // Load all mockups for related section
@@ -43,6 +43,7 @@ export default function ProductDetails() {
           title: item.title || "Untitled",
           category: item.category || "Uncategorized",
           mainCategory: item.mainCategory || "Apparel",
+          downloadEnabled: item.downloadEnabled !== false,
           downloads: Number(item.downloads) || 0,
         }));
 
@@ -71,7 +72,7 @@ export default function ProductDetails() {
           : [];
         if (thumbs.length > 0) setProductThumbnails(thumbs);
         if (result.item.description) setProductDescription(result.item.description);
-        if (result.item.objectKey) setObjectKey(result.item.objectKey);
+        setIsDownloadEnabled(result.item.downloadEnabled !== false);
       } catch {
         // fall through — gallery will use product.image fallback
       }
@@ -216,8 +217,8 @@ export default function ProductDetails() {
   }
   
   const handleDownload = async () => {
-    if (!objectKey.trim()) {
-      alert("No object key configured for this product.");
+    if (!isDownloadEnabled) {
+      alert("Download is disabled for this product.");
       return;
     }
     
@@ -227,8 +228,14 @@ export default function ProductDetails() {
       const response = await fetch(presignedUrlEndpoint, { credentials: "include" });
       
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to get download link");
+        let message = "Failed to get download link";
+        try {
+          const error = await response.json();
+          message = error?.message || message;
+        } catch {
+          // Keep default message when response is not JSON.
+        }
+        throw new Error(message);
       }
       
       const data = await response.json();
@@ -239,6 +246,7 @@ export default function ProductDetails() {
       link.href = data.url;
       link.download = data.fileName || "download";
       link.target = "_blank";
+      link.rel = "noopener noreferrer";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -293,27 +301,29 @@ export default function ProductDetails() {
                     <SquarePen className="h-4 w-4" />
                     Upload Design
                   </Link>
-                  <button
-                    type="button"
-                    onClick={handleDownload}
-                    disabled={isDownloading}
-                    className="inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-white/14 bg-white/[0.02] px-5 py-3.5 text-sm font-semibold text-white transition hover:border-primary/60 hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isDownloading ? (
-                      <>
-                        <svg className="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        Processing...
-                      </>
-                    ) : (
-                      <>
-                        <Download className="h-4 w-4" />
-                        Download
-                      </>
-                    )}
-                  </button>
+                  {isDownloadEnabled && (
+                    <button
+                      type="button"
+                      onClick={handleDownload}
+                      disabled={isDownloading}
+                      className="inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-white/14 bg-white/[0.02] px-5 py-3.5 text-sm font-semibold text-white transition hover:border-primary/60 hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isDownloading ? (
+                        <>
+                          <svg className="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <Download className="h-4 w-4" />
+                          Download
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
 

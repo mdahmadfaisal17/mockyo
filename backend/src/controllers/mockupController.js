@@ -33,6 +33,15 @@ const sanitizeFilename = (value) => {
     .substring(0, 200) || "download";
 };
 
+const parseBoolean = (value, fallback = true) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+};
+
 const toAssetItem = async (file, folder, labelPrefix) => {
   const safeName = slugify(file.originalname.replace(/\.[^.]+$/, "")) || "asset";
   const uploaded = await uploadBufferToCloudinary(
@@ -139,7 +148,10 @@ export const createMockup = asyncHandler(async (req, res) => {
     description = "",
     status = "draft",
     objectKey = "",
+    downloadEnabled,
   } = req.body;
+
+  const isDownloadEnabled = parseBoolean(downloadEnabled, true);
 
   if (!title || !category) {
     const error = new Error("Title and category are required.");
@@ -282,6 +294,7 @@ export const createMockup = asyncHandler(async (req, res) => {
     description,
     status,
     objectKey,
+    downloadEnabled: isDownloadEnabled,
     thumbnails,
     artboardLayers,
     designAreaImages,
@@ -395,6 +408,7 @@ export const updateMockup = asyncHandler(async (req, res) => {
     description = "",
     status = "draft",
     objectKey = "",
+    downloadEnabled,
   } = req.body;
 
   if (!title || !category) {
@@ -409,6 +423,8 @@ export const updateMockup = asyncHandler(async (req, res) => {
     error.statusCode = 404;
     throw error;
   }
+
+  const isDownloadEnabled = parseBoolean(downloadEnabled, mockup.downloadEnabled ?? true);
 
   const files = req.files || {};
   const artboardLayerModes = parseBlendModes(req.body.artboardLayerModes);
@@ -613,6 +629,7 @@ export const updateMockup = asyncHandler(async (req, res) => {
   mockup.description = description;
   mockup.status = status;
   mockup.objectKey = objectKey;
+  mockup.downloadEnabled = isDownloadEnabled;
   mockup.thumbnails = nextThumbnails;
   mockup.artboardLayers = nextArtboardLayers;
   mockup.designAreaImages = nextDesignAreaImages;
@@ -679,11 +696,17 @@ export const getDownloadPresignedUrl = asyncHandler(async (req, res) => {
   }
 
   ensureDatabaseReady();
-  const mockup = await Mockup.findById(mockupId).select("title objectKey").lean();
+  const mockup = await Mockup.findById(mockupId).select("title objectKey downloadEnabled").lean();
   
   if (!mockup) {
     const error = new Error("Mockup not found.");
     error.statusCode = 404;
+    throw error;
+  }
+
+  if (mockup.downloadEnabled === false) {
+    const error = new Error("Download is disabled for this product.");
+    error.statusCode = 403;
     throw error;
   }
 
@@ -731,7 +754,9 @@ export const getDownloadPresignedUrl = asyncHandler(async (req, res) => {
   } catch (error) {
     console.error("Presigned URL generation error:", error);
     const statusCode = error.statusCode || 500;
-    const message = error.message || "Failed to generate presigned URL.";
+    const message = statusCode >= 500
+      ? "Failed to generate presigned URL."
+      : (error.message || "Failed to generate presigned URL.");
     res.status(statusCode).json({ ok: false, message });
   }
 });

@@ -16,6 +16,7 @@ type MockupSearchItem = {
   title: string;
   category: string;
   mainCategory: string;
+  downloadEnabled?: boolean;
   description?: string;
   downloads: number;
   createdAt?: string;
@@ -163,6 +164,7 @@ export default function Mockups() {
           title: item.title || "Untitled",
           category: item.category || "Uncategorized",
           mainCategory: item.mainCategory || "Apparel",
+          downloadEnabled: item.downloadEnabled !== false,
           description: item.description || "",
           downloads: item.downloads ?? 0,
           createdAt: item.createdAt,
@@ -312,7 +314,7 @@ export default function Mockups() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6">
           {filteredMockups.length > 0 ? (
             <>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                 {filteredMockups.map((mockup, index) => (
                   <motion.div
                     key={mockup.id}

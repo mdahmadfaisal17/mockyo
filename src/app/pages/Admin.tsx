@@ -50,6 +50,7 @@ type Product = {
 	thumbnail: string;
 	title: string;
 	category: string;
+	downloadEnabled?: boolean;
 	downloads: number;
 	status: "Published" | "Draft";
 	createdAt: string;
@@ -588,6 +589,7 @@ export default function Admin() {
 			getFirstCategory(defaultCategoryHierarchy, getFirstMainCategory(defaultCategoryHierarchy)),
 		),
 		objectKey: "",
+		downloadEnabled: true,
 	});
 	const uploadInputRef = useRef<HTMLInputElement | null>(null);
 	const thumbnailInputRef = useRef<HTMLInputElement | null>(null);
@@ -964,6 +966,7 @@ export default function Admin() {
 						"https://images.unsplash.com/photo-1634032188532-f11af97817ab?auto=format&fit=crop&w=1080&q=80",
 					title: item.title || "Untitled",
 					category: item.category || "Uncategorized",
+					downloadEnabled: item.downloadEnabled !== false,
 					downloads: Number(item.downloads) || 0,
 					status: item.status === "published" ? "Published" : "Draft",
 					createdAt: item.createdAt || new Date().toISOString(),
@@ -1247,6 +1250,7 @@ export default function Admin() {
 				category: item?.category ?? product.category,
 				subCategory: item?.subCategory ?? "",
 				objectKey: item?.objectKey ?? "",
+				downloadEnabled: item?.downloadEnabled !== false,
 			});
 			if (item?.mainCategory && item?.category) {
 				setCategoryHierarchy((prev) =>
@@ -1459,6 +1463,7 @@ export default function Admin() {
 				category: product.category,
 				subCategory: "",
 				objectKey: "",
+				downloadEnabled: product.downloadEnabled !== false,
 			});
 		}
 
@@ -1636,6 +1641,7 @@ export default function Admin() {
 			category: nextCategory,
 			subCategory: nextSubCategory,
 			objectKey: "",
+			downloadEnabled: true,
 		});
 	};
 
@@ -2344,6 +2350,7 @@ export default function Admin() {
 				formData.append("mainCategory", productDraft.mainCategory.trim());
 				formData.append("category", productDraft.category.trim());
 				formData.append("objectKey", productDraft.objectKey.trim());
+				formData.append("downloadEnabled", String(Boolean(productDraft.downloadEnabled)));
 				formData.append("status", "published");
 
 				thumbnailAssets.forEach((item) => {
@@ -2505,6 +2512,7 @@ export default function Admin() {
 			formData.append("category", productDraft.category.trim());
 			formData.append("status", "published");
 			formData.append("objectKey", productDraft.objectKey.trim());
+			formData.append("downloadEnabled", String(Boolean(productDraft.downloadEnabled)));
 
 			thumbnailAssets.forEach((item) => {
 				if (item.file) {
@@ -2630,6 +2638,7 @@ export default function Admin() {
 					thumbnail: previewImage,
 					title: item.title,
 					category: item.category,
+					downloadEnabled: item.downloadEnabled !== false,
 					downloads: 0,
 					status: item.status === "published" ? "Published" : "Draft",
 					createdAt: item.createdAt,
@@ -2857,6 +2866,34 @@ export default function Admin() {
 									/>
 									<p className="mt-2 text-xs text-zinc-500">
 										এই product download করার সময় backend শুধু এই object key-টাই ধরবে. Public link বা fallback link আর use হবে না.
+									</p>
+								</div>
+								<div>
+									<label className="mb-1.5 block text-xs font-medium text-zinc-400">Download</label>
+									<div className="flex items-center gap-4 rounded-lg border border-white/10 bg-[#0E0E14] px-3 py-2.5 text-sm">
+										<label className="inline-flex cursor-pointer items-center gap-2 text-zinc-200">
+											<input
+												type="radio"
+												name="downloadEnabled"
+												checked={productDraft.downloadEnabled}
+												onChange={() => setProductDraft((p) => ({ ...p, downloadEnabled: true }))}
+												className="h-4 w-4 accent-[#FF6B35]"
+											/>
+											On
+										</label>
+										<label className="inline-flex cursor-pointer items-center gap-2 text-zinc-400">
+											<input
+												type="radio"
+												name="downloadEnabled"
+												checked={!productDraft.downloadEnabled}
+												onChange={() => setProductDraft((p) => ({ ...p, downloadEnabled: false }))}
+												className="h-4 w-4 accent-[#FF6B35]"
+											/>
+											Off
+										</label>
+									</div>
+									<p className="mt-2 text-xs text-zinc-500">
+										On থাকলে frontend-এ PSD ribbon এবং Download button দেখাবে, Off থাকলে দেখাবে না.
 									</p>
 								</div>
 							</div>

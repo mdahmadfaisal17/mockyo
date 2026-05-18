@@ -157,6 +157,7 @@ const mockupSchema = new mongoose.Schema(
       enum: ["draft", "published"],
       default: "draft",
     },
+    downloadEnabled: { type: Boolean, default: true },
     downloads: { type: Number, default: 0, min: 0 },
     objectKey: { type: String, default: "", trim: true },
   },

@@ -1,7 +1,7 @@
 import { motion } from "motion/react";
 import { Download, Edit } from "lucide-react";
 import { Link } from "react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { markGuestDownloadUsed, requireSigninForExtraDownload } from "../lib/guestDownloadAccess";
 
 interface MockupCardProps {
@@ -11,9 +11,10 @@ interface MockupCardProps {
   category: string;
   mainCategory?: string;
   downloads: number;
+  downloadEnabled?: boolean;
 }
 
-export default function MockupCard({ id, image, title, category, mainCategory }: MockupCardProps) {
+export default function MockupCard({ id, image, title, category, mainCategory, downloadEnabled = true }: MockupCardProps) {
   const parts = [mainCategory, category].filter(Boolean);
   const categoryLabel = parts.length > 0 ? parts.join(" / ") : category;
   const apiBaseUrl =
@@ -21,32 +22,15 @@ export default function MockupCard({ id, image, title, category, mainCategory }:
     (typeof window !== "undefined"
       ? `${window.location.protocol === "https:" ? "https:" : "http:"}//${window.location.hostname}:5000/api`
       : "http://localhost:5000/api");
-  const [objectKey, setObjectKey] = useState("");
   const [isDownloading, setIsDownloading] = useState(false);
-
-  useEffect(() => {
-    const fetchDownloadSource = async () => {
-      try {
-        const response = await fetch(`${apiBaseUrl}/mockups/${id}`);
-        const result = await response.json();
-        if (!response.ok || !result?.ok || !result.item) return;
-        if (result.item.objectKey) {
-          setObjectKey(result.item.objectKey);
-        }
-      } catch {
-        // silently fail
-      }
-    };
-    void fetchDownloadSource();
-  }, [id, apiBaseUrl]);
 
   const handleDownload = async () => {
     if (requireSigninForExtraDownload()) {
       return;
     }
 
-    if (!objectKey.trim()) {
-      alert("No object key configured for this product.");
+    if (!downloadEnabled) {
+      alert("Download is disabled for this product.");
       return;
     }
 
@@ -56,8 +40,14 @@ export default function MockupCard({ id, image, title, category, mainCategory }:
       const response = await fetch(presignedUrlEndpoint, { credentials: "include" });
       
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to get download link");
+        let message = "Failed to get download link";
+        try {
+          const error = await response.json();
+          message = error?.message || message;
+        } catch {
+          // Keep default message when response is not JSON.
+        }
+        throw new Error(message);
       }
       
       const data = await response.json();
@@ -68,6 +58,7 @@ export default function MockupCard({ id, image, title, category, mainCategory }:
       link.href = data.url;
       link.download = data.fileName || "download";
       link.target = "_blank";
+      link.rel = "noopener noreferrer";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -87,54 +78,98 @@ export default function MockupCard({ id, image, title, category, mainCategory }:
       transition={{ duration: 0.5 }}
       className="group overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(23,25,31,0.95),rgba(15,17,22,0.95))] shadow-[0_18px_45px_rgba(0,0,0,0.28)] transition hover:-translate-y-1 hover:border-white/14"
     >
-      <Link to={`/mockups/${id}`} className="block aspect-[1.12/1] overflow-hidden">
+      <Link to={`/mockups/${id}`} className="relative block overflow-hidden">
         <img
           src={image}
           alt={title}
           loading="lazy"
           decoding="async"
-          className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+          className="w-full h-auto transition-transform duration-500 group-hover:scale-105"
         />
+        {downloadEnabled && (
+          <div
+            className="absolute left-0 top-8 flex items-center pl-1.5 pr-2.5 h-5"
+            style={{
+              backgroundColor: "#001833",
+              clipPath: "polygon(0 0, 100% 0, 88% 50%, 100% 100%, 0 100%)",
+            }}
+          >
+            <span className="text-[9px] font-bold tracking-wide leading-none" style={{ color: "#2da9ff" }}>
+              PSD
+            </span>
+          </div>
+        )}
+        {/* Editor bookmark ribbon */}
+        <div
+          className="absolute left-0 top-[3.5rem] flex items-center pl-1.5 pr-2.5 h-5"
+          style={{
+            backgroundColor: "#FF6B35",
+            clipPath: "polygon(0 0, 100% 0, 88% 50%, 100% 100%, 0 100%)",
+          }}
+        >
+          <span className="text-white text-[9px] font-bold tracking-wide leading-none">
+            EDITOR
+          </span>
+        </div>
       </Link>
 
       <div className="p-5">
         <span className="text-[11px] font-medium tracking-wide text-primary/85">
           {categoryLabel}
         </span>
-        <h3 className="mb-4 mt-3 text-xl font-semibold text-white">
-          <Link to={`/mockups/${id}`} className="transition-colors hover:text-primary">
+        <h3 className="mb-4 mt-3 text-lg font-semibold leading-snug text-white">
+          <Link
+            to={`/mockups/${id}`}
+            className="transition-colors hover:text-primary"
+            style={{
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+            }}
+          >
             {title}
           </Link>
         </h3>
 
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2">
+          {downloadEnabled ? (
+            <button
+              onClick={handleDownload}
+              disabled={isDownloading}
+              className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isDownloading ? (
+                <>
+                  <svg className="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Processing...
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4" />
+                  Download
+                </>
+              )}
+            </button>
+          ) : (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground opacity-0"
+            >
+              <Download className="w-4 h-4" />
+              Download
+            </div>
+          )}
           <Link
             to={`/editor/${id}`}
-            className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+            className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-white/15 bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition-colors hover:bg-white/90"
           >
             <Edit className="w-4 h-4" />
             Upload Design
           </Link>
-          <button
-            onClick={handleDownload}
-            disabled={isDownloading}
-            className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-100 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isDownloading ? (
-              <>
-                <svg className="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Processing...
-              </>
-            ) : (
-              <>
-                <Download className="w-4 h-4" />
-                Download
-              </>
-            )}
-          </button>
         </div>
       </div>
     </motion.div>

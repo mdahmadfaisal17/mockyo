@@ -127,6 +127,8 @@ export default function Editor() {
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
   const saturationRef = useRef<HTMLDivElement | null>(null);
   const artboardCanvasRef = useRef<HTMLDivElement | null>(null);
+  const designAreaRowRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const overlayRowRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const [artboardPos, setArtboardPos] = useState({ x: 0, y: 0 });
   const [artboardZoom, setArtboardZoom] = useState(1);
@@ -236,6 +238,17 @@ export default function Editor() {
     [pendingHsv],
   );
   const designWrapperStrength = useMemo(() => designWrapperPercent / 100, [designWrapperPercent]);
+  const previewOverlayItems = useMemo(() => {
+    const typeOrder: Record<OverlayItem["type"], number> = { text: 0, logo: 1 };
+    return overlayItems
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => {
+        const byType = typeOrder[a.item.type] - typeOrder[b.item.type];
+        if (byType !== 0) return byType;
+        return a.index - b.index;
+      })
+      .map(({ item }) => item);
+  }, [overlayItems]);
 
   useEffect(() => {
     setHexInputValue(pendingColor.toUpperCase());
@@ -744,6 +757,7 @@ export default function Editor() {
     const transform = getDesignTransform(designId);
     setSelectedDesignAreaUrl(areaUrl);
     setSelectedDesignId(designId);
+    setSelectedOverlayId(null);
 
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     activePinchPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -810,6 +824,7 @@ export default function Editor() {
     const transform = getDesignTransform(designId);
     setSelectedDesignAreaUrl(areaUrl);
     setSelectedDesignId(designId);
+    setSelectedOverlayId(null);
     isScalingDesign.current = true;
     designScaleStart.current = {
       distance: Math.max(getDistanceFromCenter(e.clientX, e.clientY), 1),
@@ -825,6 +840,7 @@ export default function Editor() {
     const transform = getDesignTransform(designId);
     setSelectedDesignAreaUrl(areaUrl);
     setSelectedDesignId(designId);
+    setSelectedOverlayId(null);
     setRotationGuide({ areaUrl, designId, angle: normalizeAngle(transform.rotation), snapped: false });
     isRotatingDesign.current = true;
     designRotateStart.current = {
@@ -981,6 +997,12 @@ export default function Editor() {
 
   const handleArtboardMouseDown = (e: React.PointerEvent) => {
     if (window.innerWidth < 1024) return;
+    if (e.target === e.currentTarget) {
+      setSelectedDesignId(null);
+      setSelectedDesignAreaUrl(null);
+      setSelectedOverlayId(null);
+      setRotationGuide(null);
+    }
     isDragging.current = true;
     dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, posX: artboardPos.x, posY: artboardPos.y };
     e.preventDefault();
@@ -1393,6 +1415,7 @@ export default function Editor() {
   const selectedWorkspaceRotation = selectedWorkspaceTransform
     ? Math.round(normalizeAngle(selectedWorkspaceTransform.rotation))
     : 0;
+  const hasSelectedWorkspaceDesign = Boolean(selectedWorkspaceDesign && selectedWorkspaceTransform);
 
   const setSelectedWorkspaceScalePercent = (nextPercent: number) => {
     if (!selectedDesignId) return;
@@ -1433,6 +1456,18 @@ export default function Editor() {
     }
   };
 
+  useEffect(() => {
+    if (selectedDesignAreaUrl) {
+      designAreaRowRefs.current[selectedDesignAreaUrl]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [selectedDesignAreaUrl]);
+
+  useEffect(() => {
+    if (selectedOverlayId) {
+      overlayRowRefs.current[selectedOverlayId]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [selectedOverlayId]);
+
   const handleDeleteAllDesigns = () => {
     const hasAnyDesign = Object.values(uploadedDesignByArea).some((items) => items.length > 0);
     if (!hasAnyDesign) return;
@@ -1464,8 +1499,7 @@ export default function Editor() {
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {selectedWorkspaceDesign && selectedWorkspaceTransform ? (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border border-white/12 bg-black/20 px-2 py-1.5">
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-white/12 bg-black/20 px-2 py-1.5">
                 <label className="flex items-center gap-2 rounded-sm border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200">
                   <span className="font-medium text-zinc-300">Scale</span>
                   <input
@@ -1474,6 +1508,7 @@ export default function Editor() {
                     max={100}
                     value={selectedWorkspaceScalePercent}
                     onChange={(e) => setSelectedWorkspaceScalePercent(Number(e.currentTarget.value))}
+                    disabled={!hasSelectedWorkspaceDesign}
                     className="w-24 accent-primary"
                   />
                   <span className="w-9 text-right font-semibold text-primary">{selectedWorkspaceScalePercent}%</span>
@@ -1487,6 +1522,7 @@ export default function Editor() {
                     max={180}
                     value={selectedWorkspaceRotation}
                     onChange={(e) => setSelectedWorkspaceRotation(Number(e.currentTarget.value))}
+                    disabled={!hasSelectedWorkspaceDesign}
                     className="w-24 accent-primary"
                   />
                   <input
@@ -1495,6 +1531,7 @@ export default function Editor() {
                     max={180}
                     value={selectedWorkspaceRotation}
                     onChange={(e) => setSelectedWorkspaceRotation(Number(e.currentTarget.value || 0))}
+                    disabled={!hasSelectedWorkspaceDesign}
                     className="w-14 rounded-sm border border-white/15 bg-black/30 px-1.5 py-0.5 text-right text-[11px] font-semibold text-primary outline-none focus:border-primary/60"
                   />
                   <span className="text-zinc-400">deg</span>
@@ -1509,7 +1546,6 @@ export default function Editor() {
                   Delete all design
                 </button>
               </div>
-            ) : null}
 
             <div ref={exportMenuRef} className="relative flex items-center gap-2">
             <button
@@ -1616,6 +1652,9 @@ export default function Editor() {
                   return (
                 <div
                   key={item.id}
+                    ref={(node) => {
+                      designAreaRowRefs.current[item.url] = node;
+                    }}
                   className={`group flex w-full items-center rounded-sm border border-dashed px-3 py-2 text-left transition ${
                     selectedDesignAreaUrl === item.url
                       ? "border-primary/90 bg-primary/12 shadow-[inset_0_0_0_1px_rgba(255,107,53,0.25)]"
@@ -1811,6 +1850,9 @@ export default function Editor() {
                 {overlayItems.map((item) => (
                   <div
                     key={item.id}
+                    ref={(node) => {
+                      overlayRowRefs.current[item.id] = node;
+                    }}
                     onClick={() => {
                       setSelectedOverlayId(item.id);
                       setSelectedDesignId(null);
@@ -2285,7 +2327,7 @@ export default function Editor() {
             })}
 
             {/* Overlay items (text & logo) */}
-            {overlayItems.map((item) => (
+            {previewOverlayItems.map((item) => (
               <div
                 key={`overlay-${item.id}`}
                 onPointerDown={(e) => handleOverlayMouseDown(e, item.id)}
@@ -2295,7 +2337,7 @@ export default function Editor() {
                   left: "50%",
                   top: "50%",
                   transform: `translate(-50%, -50%) translate(${item.x}px, ${item.y}px) rotate(${item.rotation}deg) scale(${item.scale})`,
-                  zIndex: 500,
+                  zIndex: item.type === "text" ? 2 : 3,
                   cursor: "move",
                   userSelect: "none",
                   pointerEvents: "auto",

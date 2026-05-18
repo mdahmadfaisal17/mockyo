@@ -24,6 +24,7 @@ type TrendingMockup = {
   title: string;
   mainCategory: string;
   category: string;
+  downloadEnabled?: boolean;
   downloads: number;
 };
 
@@ -204,6 +205,7 @@ export default function Home() {
           title: item.title || "Untitled",
           mainCategory: item.mainCategory || "",
           category: item.category || "Uncategorized",
+          downloadEnabled: item.downloadEnabled !== false,
           downloads: Number(item.downloads) || 0,
         }));
 
@@ -374,7 +376,7 @@ export default function Home() {
             </Link>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {trendingMockups.map((mockup, index) => (
               <motion.div
                 key={mockup.id}
