@@ -45,9 +45,9 @@ const legalLinks = [
 
 const socialLinks = [
   { label: "Instagram", href: "#", icon: InstagramIcon },
-  { label: "Facebook", href: "#", icon: FacebookIcon },
-  { label: "LinkedIn", href: "#", icon: LinkedinIcon },
-  { label: "Behance", href: "#", icon: BehanceIcon },
+  { label: "Facebook", href: "https://www.facebook.com/mockyoofficial/", icon: FacebookIcon },
+  { label: "LinkedIn", href: "https://www.linkedin.com/in/abdullahalfaysaldesign/", icon: LinkedinIcon },
+  { label: "Behance", href: "https://www.behance.net/abdullahalfaysal", icon: BehanceIcon },
 ];
 
 export default function Footer() {
