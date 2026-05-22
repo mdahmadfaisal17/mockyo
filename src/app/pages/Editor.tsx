@@ -1,4 +1,4 @@
-import { AlignCenter, AlignLeft, AlignRight, ChevronDown, ImagePlus, Palette, Search, Trash2, Type, Upload } from "lucide-react";
+import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Hand, ImagePlus, MousePointer2, Palette, RotateCcw, Scaling, Search, Trash2, Type, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { markGuestDownloadUsed, requireSigninForExtraDownload } from "../lib/guestDownloadAccess";
 import { readAuthUser } from "../imports/authStore";
@@ -118,6 +118,9 @@ export default function Editor() {
   const [isRightPanelLoading, setIsRightPanelLoading] = useState(false);
 
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [isScalePopupOpen, setIsScalePopupOpen] = useState(false);
+  const [isRotatePopupOpen, setIsRotatePopupOpen] = useState(false);
+  const [activeTool, setActiveTool] = useState<"select" | "hand">("select");
   const [exportFormat, setExportFormat] = useState<"PNG" | "JPEG">("PNG");
   const [exportSize, setExportSize] = useState<
     "4000x4000 px" | "1000x1000 px" | "500x500 px"
@@ -145,6 +148,8 @@ export default function Editor() {
   const isPinching = useRef(false);
   const pinchStartDistance = useRef(0);
   const pinchStartScale = useRef(1);
+  const pinchStartAngle = useRef(0);
+  const pinchStartRotation = useRef(0);
   const pinchDesignId = useRef("");
   const normalizedDesignIdsRef = useRef<Set<string>>(new Set());
 
@@ -754,6 +759,10 @@ export default function Editor() {
   };
 
   const handleDesignPreviewMouseDown = (e: React.PointerEvent<HTMLElement>, areaUrl: string, designId: string) => {
+    if (activeTool === "hand") {
+      // pass through to artboard pan — do not select or drag design
+      return;
+    }
     const transform = getDesignTransform(designId);
     setSelectedDesignAreaUrl(areaUrl);
     setSelectedDesignId(designId);
@@ -769,6 +778,8 @@ export default function Editor() {
       const pts = [...activePinchPointers.current.values()];
       pinchStartDistance.current = Math.max(Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y), 1);
       pinchStartScale.current = transform.scale;
+      pinchStartAngle.current = getAngleBetweenPoints(pts[0], pts[1]);
+      pinchStartRotation.current = transform.rotation;
     } else {
       isPinching.current = false;
       isDraggingDesign.current = true;
@@ -820,6 +831,10 @@ export default function Editor() {
     return (Math.atan2(dy, dx) * 180) / Math.PI;
   };
 
+  const getAngleBetweenPoints = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+    return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+  };
+
   const handleDesignScaleMouseDown = (e: React.PointerEvent<HTMLButtonElement>, areaUrl: string, designId: string) => {
     const transform = getDesignTransform(designId);
     setSelectedDesignAreaUrl(areaUrl);
@@ -832,6 +847,7 @@ export default function Editor() {
       areaUrl,
       designId,
     };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     e.stopPropagation();
     e.preventDefault();
   };
@@ -849,6 +865,7 @@ export default function Editor() {
       areaUrl,
       designId,
     };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     e.stopPropagation();
     e.preventDefault();
   };
@@ -859,6 +876,18 @@ export default function Editor() {
     setPendingHsv(hexToHsv(existingColor));
     setHexInputValue(existingColor.toUpperCase());
     setColorPickerTargetUrl(areaUrl);
+  };
+
+  const removeColorFromArea = (areaUrl: string) => {
+    setAppliedColorByArea((prev) => {
+      const next = { ...prev };
+      delete next[areaUrl];
+      return next;
+    });
+    if (selectedColorAreaUrl === areaUrl) {
+      setSelectedColorAreaUrl(null);
+      setColorPickerTargetUrl(null);
+    }
   };
 
   const applySelectedColor = () => {
@@ -933,6 +962,7 @@ export default function Editor() {
     if (!item) return;
     isScalingOverlay.current = true;
     overlayScaleStart.current = { mouseX: e.clientX, mouseY: e.clientY, scale: item.scale, id: overlayId };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     e.stopPropagation();
     e.preventDefault();
   };
@@ -956,6 +986,7 @@ export default function Editor() {
     const startAngle = (Math.atan2(e.clientY - center.y, e.clientX - center.x) * 180) / Math.PI;
     isRotatingOverlay.current = true;
     overlayRotateStart.current = { angle: startAngle, rotation: item.rotation, id: overlayId };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     e.stopPropagation();
     e.preventDefault();
   };
@@ -997,14 +1028,19 @@ export default function Editor() {
 
   const handleArtboardMouseDown = (e: React.PointerEvent) => {
     if (window.innerWidth < 1024) return;
+    if (activeTool === "hand") {
+      isDragging.current = true;
+      dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, posX: artboardPos.x, posY: artboardPos.y };
+      e.preventDefault();
+      return;
+    }
+    // select tool — deselect on background click, no pan
     if (e.target === e.currentTarget) {
       setSelectedDesignId(null);
       setSelectedDesignAreaUrl(null);
       setSelectedOverlayId(null);
       setRotationGuide(null);
     }
-    isDragging.current = true;
-    dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, posX: artboardPos.x, posY: artboardPos.y };
     e.preventDefault();
   };
 
@@ -1030,11 +1066,30 @@ export default function Editor() {
           const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
           const ratio = dist / Math.max(pinchStartDistance.current, 1);
           const nextScale = clamp(pinchStartScale.current * ratio, MIN_DESIGN_SCALE, 3);
+          const angleNow = getAngleBetweenPoints(pts[0], pts[1]);
+          const angleDelta = angleNow - pinchStartAngle.current;
+          const rawRotation = pinchStartRotation.current + angleDelta;
+          const snappedRotation = getSnappedRotation(rawRotation, DESIGN_ROTATION_SNAP_STEP);
           const did = pinchDesignId.current;
-          setDesignTransformById((prev) => {
-            const current = prev[did] ?? defaultDesignTransform;
-            return { ...prev, [did]: { ...current, scale: nextScale } };
-          });
+          if (did) {
+            setDesignTransformById((prev) => {
+              const current = prev[did] ?? defaultDesignTransform;
+              return {
+                ...prev,
+                [did]: {
+                  ...current,
+                  scale: nextScale,
+                  rotation: snappedRotation.angle,
+                },
+              };
+            });
+            setRotationGuide({
+              areaUrl: selectedDesignAreaUrl ?? "",
+              designId: did,
+              angle: snappedRotation.guideAngle,
+              snapped: snappedRotation.snapped,
+            });
+          }
         }
         return;
       }
@@ -1142,7 +1197,10 @@ export default function Editor() {
     };
     const onMouseUp = (e: PointerEvent) => {
       activePinchPointers.current.delete(e.pointerId);
-      if (activePinchPointers.current.size < 2) isPinching.current = false;
+      if (activePinchPointers.current.size < 2) {
+        isPinching.current = false;
+        pinchDesignId.current = "";
+      }
       isDragging.current = false;
       isDraggingDesign.current = false;
       isScalingDesign.current = false;
@@ -1416,6 +1474,56 @@ export default function Editor() {
     ? Math.round(normalizeAngle(selectedWorkspaceTransform.rotation))
     : 0;
   const hasSelectedWorkspaceDesign = Boolean(selectedWorkspaceDesign && selectedWorkspaceTransform);
+  const selectedOverlayItem = selectedOverlayId
+    ? overlayItems.find((item) => item.id === selectedOverlayId) ?? null
+    : null;
+  const selectedOverlayScalePercent = selectedOverlayItem
+    ? Math.round(clamp(selectedOverlayItem.scale, 0.1, 5) * 100)
+    : 100;
+  const selectedOverlayRotation = selectedOverlayItem
+    ? Math.round(normalizeAngle(selectedOverlayItem.rotation))
+    : 0;
+
+  const updateSelectedWorkspaceTransform = (patch: Partial<DesignTransform>) => {
+    if (!selectedDesignId) return;
+    setDesignTransformById((prev) => {
+      const current = prev[selectedDesignId] ?? defaultDesignTransform;
+      return {
+        ...prev,
+        [selectedDesignId]: {
+          ...current,
+          ...patch,
+        },
+      };
+    });
+  };
+
+  const resetSelectedWorkspaceTransform = () => {
+    if (!selectedDesignId) return;
+    setDesignTransformById((prev) => ({
+      ...prev,
+      [selectedDesignId]: defaultDesignTransform,
+    }));
+    setRotationGuide(null);
+  };
+
+  const updateSelectedOverlay = (patch: Partial<OverlayItem>) => {
+    if (!selectedOverlayId) return;
+    setOverlayItems((prev) => prev.map((item) => (
+      item.id === selectedOverlayId
+        ? { ...item, ...patch }
+        : item
+    )));
+  };
+
+  const resetSelectedOverlayTransform = () => {
+    if (!selectedOverlayId) return;
+    setOverlayItems((prev) => prev.map((item) => (
+      item.id === selectedOverlayId
+        ? { ...item, x: 0, y: 0, scale: 1, rotation: 0 }
+        : item
+    )));
+  };
 
   const setSelectedWorkspaceScalePercent = (nextPercent: number) => {
     if (!selectedDesignId) return;
@@ -1469,9 +1577,6 @@ export default function Editor() {
   }, [selectedOverlayId]);
 
   const handleDeleteAllDesigns = () => {
-    const hasAnyDesign = Object.values(uploadedDesignByArea).some((items) => items.length > 0);
-    if (!hasAnyDesign) return;
-
     setIsDeleteAllModalOpen(true);
   };
 
@@ -1484,6 +1589,15 @@ export default function Editor() {
     setSelectedDesignId(null);
     setSelectedDesignAreaUrl(null);
     setRotationGuide(null);
+    setAppliedColorByArea({});
+    setArtboardBgColor(null);
+    setOverlayItems([]);
+    setSelectedOverlayId(null);
+    setEditingTextOverlayId(null);
+    setPendingOverlayText("Your Text");
+    setPendingOverlayFontColor("#FFFFFF");
+    setPendingOverlayTextAlign("center");
+    setShowTextColorPicker(false);
   };
 
   return (
@@ -1492,66 +1606,121 @@ export default function Editor() {
       <div className="absolute inset-0 hero-grid-bg" />
 
       <section className="relative z-30 mb-3.5 rounded-xl border border-white/8 bg-[#16161F] px-4 sm:px-6 py-3 sm:py-3.5 shadow-[0_12px_30px_rgba(0,0,0,0.18)]">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0 shrink">
             <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-primary/80">Workspace</p>
-            <h1 className="mt-1 text-lg sm:text-2xl font-semibold text-zinc-100 line-clamp-1">{productTitle}</h1>
+            <h1 className="mt-0.5 text-sm sm:text-base font-semibold text-zinc-100 line-clamp-1">{productTitle}</h1>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex w-full flex-col gap-2 md:flex-row md:items-center md:justify-start lg:flex-row lg:items-center lg:justify-end">
             <div className="flex flex-wrap items-center gap-2 rounded-md border border-white/12 bg-black/20 px-2 py-1.5">
-                <label className="flex items-center gap-2 rounded-sm border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200">
-                  <span className="font-medium text-zinc-300">Scale</span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    value={selectedWorkspaceScalePercent}
-                    onChange={(e) => setSelectedWorkspaceScalePercent(Number(e.currentTarget.value))}
-                    disabled={!hasSelectedWorkspaceDesign}
-                    className="w-24 accent-primary"
-                  />
-                  <span className="w-9 text-right font-semibold text-primary">{selectedWorkspaceScalePercent}%</span>
-                </label>
+                {/* Selection / Hand tools */}
+                <button
+                  type="button"
+                  title="Select"
+                  onClick={() => setActiveTool("select")}
+                  className={`flex h-7 w-7 items-center justify-center rounded-sm border transition ${activeTool === "select" ? "border-primary/60 bg-primary/15 text-primary" : "border-white/10 bg-white/5 text-zinc-300 hover:border-primary/40 hover:text-primary"}`}
+                >
+                  <MousePointer2 className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="Hand (Pan)"
+                  onClick={() => setActiveTool("hand")}
+                  className={`flex h-7 w-7 items-center justify-center rounded-sm border transition ${activeTool === "hand" ? "border-primary/60 bg-primary/15 text-primary" : "border-white/10 bg-white/5 text-zinc-300 hover:border-primary/40 hover:text-primary"}`}
+                >
+                  <Hand className="h-3.5 w-3.5" />
+                </button>
 
-                <label className="flex items-center gap-2 rounded-sm border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-200">
-                  <span className="font-medium text-zinc-300">Rotate</span>
-                  <input
-                    type="range"
-                    min={-180}
-                    max={180}
-                    value={selectedWorkspaceRotation}
-                    onChange={(e) => setSelectedWorkspaceRotation(Number(e.currentTarget.value))}
+                <div className="h-4 w-px bg-white/12" />
+
+                {/* Scale icon + popup */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    title="Scale"
                     disabled={!hasSelectedWorkspaceDesign}
-                    className="w-24 accent-primary"
-                  />
-                  <input
-                    type="number"
-                    min={-180}
-                    max={180}
-                    value={selectedWorkspaceRotation}
-                    onChange={(e) => setSelectedWorkspaceRotation(Number(e.currentTarget.value || 0))}
+                    onClick={() => { setIsScalePopupOpen((p) => !p); setIsRotatePopupOpen(false); }}
+                    className={`flex h-7 w-7 items-center justify-center rounded-sm border transition disabled:cursor-not-allowed disabled:border-white/10 disabled:text-zinc-500 ${isScalePopupOpen ? "border-primary/60 bg-primary/15 text-primary" : "border-white/10 bg-white/5 text-zinc-300 hover:border-primary/40 hover:text-primary"}`}
+                  >
+                    <Scaling className="h-3.5 w-3.5" />
+                  </button>
+                  {isScalePopupOpen && hasSelectedWorkspaceDesign && (
+                    <>
+                      <div className="fixed inset-0 z-[48]" onClick={() => setIsScalePopupOpen(false)} />
+                      <div className="absolute left-1/2 top-full z-[49] mt-2 -translate-x-1/2 rounded-lg border border-white/12 bg-[#16161F] p-3 shadow-xl">
+                        <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Scale</p>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            value={selectedWorkspaceScalePercent}
+                            onChange={(e) => setSelectedWorkspaceScalePercent(Number(e.currentTarget.value))}
+                            className="w-32 accent-primary"
+                          />
+                          <span className="w-10 text-right text-[11px] font-semibold text-primary">{selectedWorkspaceScalePercent}%</span>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Rotate icon + popup */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    title="Rotate"
                     disabled={!hasSelectedWorkspaceDesign}
-                    className="w-14 rounded-sm border border-white/15 bg-black/30 px-1.5 py-0.5 text-right text-[11px] font-semibold text-primary outline-none focus:border-primary/60"
-                  />
-                  <span className="text-zinc-400">deg</span>
-                </label>
+                    onClick={() => { setIsRotatePopupOpen((p) => !p); setIsScalePopupOpen(false); }}
+                    className={`flex h-7 w-7 items-center justify-center rounded-sm border transition disabled:cursor-not-allowed disabled:border-white/10 disabled:text-zinc-500 ${isRotatePopupOpen ? "border-primary/60 bg-primary/15 text-primary" : "border-white/10 bg-white/5 text-zinc-300 hover:border-primary/40 hover:text-primary"}`}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </button>
+                  {isRotatePopupOpen && hasSelectedWorkspaceDesign && (
+                    <>
+                      <div className="fixed inset-0 z-[48]" onClick={() => setIsRotatePopupOpen(false)} />
+                      <div className="absolute left-1/2 top-full z-[49] mt-2 -translate-x-1/2 rounded-lg border border-white/12 bg-[#16161F] p-3 shadow-xl">
+                        <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Rotate</p>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="range"
+                            min={-180}
+                            max={180}
+                            value={selectedWorkspaceRotation}
+                            onChange={(e) => setSelectedWorkspaceRotation(Number(e.currentTarget.value))}
+                            className="w-32 accent-primary"
+                          />
+                          <input
+                            type="number"
+                            min={-180}
+                            max={180}
+                            value={selectedWorkspaceRotation}
+                            onChange={(e) => setSelectedWorkspaceRotation(Number(e.currentTarget.value || 0))}
+                            className="w-14 rounded-sm border border-white/15 bg-black/30 px-1.5 py-0.5 text-right text-[11px] font-semibold text-primary outline-none focus:border-primary/60"
+                          />
+                          <span className="text-[11px] text-zinc-400">deg</span>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
 
                 <button
                   type="button"
                   onClick={handleDeleteAllDesigns}
-                  disabled={!Object.values(uploadedDesignByArea).some((items) => items.length > 0)}
+                  disabled={!Object.values(uploadedDesignByArea).some((items) => items.length > 0) && Object.keys(appliedColorByArea).length === 0 && !artboardBgColor && overlayItems.length === 0}
                   className="rounded-sm border border-red-500/45 bg-red-500/10 px-2.5 py-1 text-[11px] font-semibold text-red-300 transition hover:bg-red-500/18 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-zinc-500"
                 >
-                  Delete all design
+                  Reset
                 </button>
               </div>
 
-            <div ref={exportMenuRef} className="relative flex items-center gap-2">
+            <div ref={exportMenuRef} className="relative flex w-full justify-end gap-2 md:w-auto">
             <button
               type="button"
               onClick={() => setIsExportMenuOpen((prev) => !prev)}
-              className="flex h-10 items-center gap-1.5 rounded-sm bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90"
+              className="flex h-10 w-full items-center justify-center gap-1.5 rounded-sm bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 md:w-auto md:justify-center"
             >
               Export
               <ChevronDown className={`h-4 w-4 transition ${isExportMenuOpen ? "rotate-180" : ""}`} />
@@ -1738,19 +1907,18 @@ export default function Editor() {
           ) : (
             <div className="space-y-2.5 rounded-lg border border-white/10 bg-black/10 p-2">
               {colorAreaImages.map((item) => (
-                <button
+                <div
                   key={item.id}
-                  type="button"
                   onClick={() => {
                     openColorPickerForArea(item.url);
                   }}
-                  className={`group flex w-full items-center rounded-sm border border-dashed px-3 py-2 text-left transition ${
+                  className={`group flex w-full items-center rounded-sm border border-dashed px-3 py-2 transition ${
                     selectedColorAreaUrl === item.url
                       ? "border-primary/90 bg-primary/12 shadow-[inset_0_0_0_1px_rgba(255,107,53,0.25)]"
                       : "border-white/20 bg-black/25 hover:border-primary/55 hover:bg-white/5"
                   }`}
                 >
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 text-left">
                     <span className="flex items-center gap-1.5 truncate text-xs font-medium text-zinc-200">
                       <Palette className="h-3.5 w-3.5 shrink-0 text-primary transition group-hover:scale-105" />
                       <span className="truncate">{item.label}</span>
@@ -1761,7 +1929,20 @@ export default function Editor() {
                       <span className="mt-0.5 block text-[10px] text-zinc-500">Click to choose color</span>
                     )}
                   </div>
-                </button>
+                  {appliedColorByArea[item.url] && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeColorFromArea(item.url);
+                      }}
+                      className="ml-3 shrink-0 rounded-sm border border-white/10 bg-white/5 p-1 text-zinc-300 transition hover:bg-white/10 hover:text-red-400"
+                      title="Remove color"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
               ))}
 
               <p className="pt-1 text-[11px] text-zinc-500">Click any layer to open color palette.</p>
@@ -1891,7 +2072,7 @@ export default function Editor() {
             ref={artboardCanvasRef}
             onPointerDown={handleArtboardMouseDown}
             onWheel={handleArtboardWheel}
-            className="relative w-full max-w-[610px] shrink-0 cursor-grab shadow-[0_8px_40px_rgba(0,0,0,0.45)] select-none active:cursor-grabbing"
+            className={`relative w-full max-w-[610px] shrink-0 shadow-[0_8px_40px_rgba(0,0,0,0.45)] select-none ${activeTool === "hand" ? "cursor-grab active:cursor-grabbing" : "cursor-default"}`}
             style={{
               transform: `translate(${artboardPos.x}px, ${artboardPos.y}px) scale(${artboardZoom})`,
               transformOrigin: "center center",
@@ -2070,8 +2251,9 @@ export default function Editor() {
               });
             })}
 
-            {selectedDesignAreaUrl && selectedDesignId && getSelectedDesign() ? (() => {
-              const t = getDesignTransform(selectedDesignId);
+            <div style={{ position: "absolute", inset: 0, zIndex: 999999, pointerEvents: "none" }}>
+              {selectedDesignAreaUrl && selectedDesignId && getSelectedDesign() ? (() => {
+                const t = getDesignTransform(selectedDesignId);
               const baseSize = getDesignBaseSize(selectedDesignId);
               const bbW = baseSize.w;
               const bbH = baseSize.h;
@@ -2104,7 +2286,7 @@ export default function Editor() {
                     left: "50%",
                     width: boxW,
                     height: boxH,
-                    zIndex: 500,
+                    zIndex: 100000,
                     transform: `translate(-50%, -50%) translate(${controlOffsetX}px, ${controlOffsetY}px) rotate(${controlRotation}deg)`,
                     transformOrigin: "center center",
                     pointerEvents: "none",
@@ -2186,10 +2368,10 @@ export default function Editor() {
                     onClick={deleteSelectedDesign}
                     style={{
                       position: "absolute",
-                      top: -30,
-                      right: -30,
-                      width: 22,
-                      height: 22,
+                      top: -34,
+                      right: -34,
+                      width: 28,
+                      height: 28,
                       borderRadius: 999,
                       background: "#11131B",
                       border: "1.5px solid #FF6B35",
@@ -2213,11 +2395,11 @@ export default function Editor() {
                     }}
                     style={{
                       position: "absolute",
-                      top: -28,
+                      top: -32,
                       left: "50%",
                       transform: "translateX(-50%)",
-                      width: 18,
-                      height: 18,
+                      width: 30,
+                      height: 30,
                       borderRadius: "50%",
                       background: "#11131B",
                       border: "1.5px solid #FF6B35",
@@ -2256,10 +2438,10 @@ export default function Editor() {
                     }}
                     style={{
                       position: "absolute",
-                      bottom: -12,
-                      right: -12,
-                      width: 24,
-                      height: 24,
+                      bottom: -16,
+                      right: -16,
+                      width: 30,
+                      height: 30,
                       borderRadius: 4,
                       background: "#FF6B35",
                       border: "1.5px solid #fff",
@@ -2278,10 +2460,10 @@ export default function Editor() {
                     }}
                     style={{
                       position: "absolute",
-                      bottom: -12,
-                      left: -12,
-                      width: 24,
-                      height: 24,
+                      bottom: -16,
+                      left: -16,
+                      width: 30,
+                      height: 30,
                       borderRadius: 4,
                       background: "#FF6B35",
                       border: "1.5px solid #fff",
@@ -2294,6 +2476,7 @@ export default function Editor() {
                 </div>
               );
             })() : null}
+            </div>
 
 
 
@@ -2337,9 +2520,10 @@ export default function Editor() {
                   left: "50%",
                   top: "50%",
                   transform: `translate(-50%, -50%) translate(${item.x}px, ${item.y}px) rotate(${item.rotation}deg) scale(${item.scale})`,
-                  zIndex: item.type === "text" ? 2 : 3,
+                  zIndex: selectedOverlayId === item.id ? 100001 : item.type === "text" ? 2 : 3,
                   cursor: "move",
                   userSelect: "none",
+                  touchAction: "none",
                   pointerEvents: "auto",
                 }}
               >
@@ -2407,10 +2591,10 @@ export default function Editor() {
                       onClick={() => removeOverlay(item.id)}
                       style={{
                         position: "absolute",
-                        top: -30,
-                        right: -30,
-                        width: 22,
-                        height: 22,
+                        top: -34,
+                        right: -34,
+                        width: 28,
+                        height: 28,
                         borderRadius: 999,
                         background: "#11131B",
                         border: "1.5px solid #FF6B35",
@@ -2432,11 +2616,11 @@ export default function Editor() {
                       onPointerDown={(e) => { e.stopPropagation(); handleOverlayRotateMouseDown(e, item.id); }}
                       style={{
                         position: "absolute",
-                        top: -28,
+                        top: -32,
                         left: "50%",
                         transform: "translateX(-50%)",
-                        width: 18,
-                        height: 18,
+                        width: 30,
+                        height: 30,
                         borderRadius: "50%",
                         background: "#11131B",
                         border: "1.5px solid #FF6B35",
@@ -2474,10 +2658,10 @@ export default function Editor() {
                       onPointerDown={(e) => { e.stopPropagation(); handleOverlayScaleMouseDown(e, item.id); }}
                       style={{
                         position: "absolute",
-                        bottom: -8,
-                        right: -8,
-                        width: 16,
-                        height: 16,
+                        bottom: -16,
+                        right: -16,
+                        width: 24,
+                        height: 24,
                         borderRadius: 2,
                         background: "#FF6B35",
                         border: "1.5px solid #fff",
@@ -2493,10 +2677,10 @@ export default function Editor() {
                       onPointerDown={(e) => { e.stopPropagation(); handleOverlayScaleMouseDown(e, item.id); }}
                       style={{
                         position: "absolute",
-                        bottom: -8,
-                        left: -8,
-                        width: 16,
-                        height: 16,
+                        bottom: -16,
+                        left: -16,
+                        width: 24,
+                        height: 24,
                         borderRadius: 2,
                         background: "#FF6B35",
                         border: "1.5px solid #fff",

@@ -28,7 +28,7 @@ const listenWithFallback = (startPort, maxAttempts = 10) =>
 
     const tryListen = (portToTry) => {
       attempts += 1;
-      const server = app.listen(portToTry, () => {
+      const server = app.listen(portToTry, "0.0.0.0", () => {
         if (attempts > 1) {
           console.warn(`Port ${startPort} was busy. Using port ${portToTry} instead.`);
         }

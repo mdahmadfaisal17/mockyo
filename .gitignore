@@ -13,6 +13,32 @@ backend/.env.*
 !.env.example
 !backend/.env.example
 
+# Credentials and private keys
+*credential*
+*credentials*
+*secret*
+*secrets*
+*.pem
+*.key
+*.p8
+*.p12
+*.crt
+*.cer
+service-account*.json
+firebase-admin*.json
+google-credentials*.json
+aws-credentials*
+backend/*credential*
+backend/*credentials*
+backend/*secret*
+backend/*secrets*
+backend/*.pem
+backend/*.key
+backend/*.p8
+backend/*.p12
+backend/*.crt
+backend/*.cer
+
 # Log files
 *.log
 debug.log
