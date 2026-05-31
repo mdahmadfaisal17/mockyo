@@ -72,6 +72,14 @@ const cornerPointSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const wrapHandlePairSchema = new mongoose.Schema(
+  {
+    start: { type: cornerPointSchema, default: () => ({ x: 0, y: 0 }) },
+    end: { type: cornerPointSchema, default: () => ({ x: 0, y: 0 }) },
+  },
+  { _id: false },
+);
+
 const designAreaAssetSchema = new mongoose.Schema(
   {
     label: { type: String, required: true },
@@ -92,6 +100,12 @@ const designAreaAssetSchema = new mongoose.Schema(
       topRight: { type: cornerPointSchema, default: () => ({ x: 1, y: 0 }) },
       bottomLeft: { type: cornerPointSchema, default: () => ({ x: 0, y: 1 }) },
       bottomRight: { type: cornerPointSchema, default: () => ({ x: 1, y: 1 }) },
+    },
+    wrapHandles: {
+      top: { type: wrapHandlePairSchema, default: () => ({ start: { x: 0.25, y: 0 }, end: { x: 0.75, y: 0 } }) },
+      right: { type: wrapHandlePairSchema, default: () => ({ start: { x: 1, y: 0.25 }, end: { x: 1, y: 0.75 } }) },
+      bottom: { type: wrapHandlePairSchema, default: () => ({ start: { x: 0.75, y: 1 }, end: { x: 0.25, y: 1 } }) },
+      left: { type: wrapHandlePairSchema, default: () => ({ start: { x: 0, y: 0.75 }, end: { x: 0, y: 0.25 } }) },
     },
   },
   { _id: false },

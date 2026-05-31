@@ -7,6 +7,8 @@ import {
   updateMockup,
   downloadFile,
   getDownloadPresignedUrl,
+  authorizeMockupDownload,
+  confirmMockupDownload,
   incrementMockupDownloads,
 } from "../controllers/mockupController.js";
 import upload from "../middlewares/upload.js";
@@ -41,6 +43,8 @@ const uploadFields = upload.fields([
 router.get("/", getMockups);
 router.get("/download/presigned-url", getDownloadPresignedUrl);
 router.get("/download/file", downloadFile);
+router.post("/:id/downloads/authorize", authorizeMockupDownload);
+router.post("/:id/downloads/confirm", confirmMockupDownload);
 router.post("/:id/downloads/increment", incrementMockupDownloads);
 router.get("/:id", getMockupById);
 router.post("/", requireAdminAccess, uploadFields, createMockup);

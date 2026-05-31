@@ -358,8 +358,11 @@ export const issueAdminCsrfToken = asyncHandler(async (_req, res) => {
 
 export const googleAuth = asyncHandler(async (req, res) => {
   const credential = String(req.body?.credential || "").trim();
-  const googleClientId = String(process.env.GOOGLE_CLIENT_ID || "").trim();
-  const googleClient = googleClientId ? new OAuth2Client(googleClientId) : null;
+  const googleClientIds = String(process.env.GOOGLE_CLIENT_ID || "")
+    .split(",")
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const googleClient = googleClientIds.length ? new OAuth2Client() : null;
 
   if (!credential) {
     const error = new Error("Google credential is required.");
@@ -367,16 +370,23 @@ export const googleAuth = asyncHandler(async (req, res) => {
     throw error;
   }
 
-  if (!googleClientId || !googleClient) {
+  if (!googleClientIds.length || !googleClient) {
     const error = new Error("Google sign-in is not configured on the server.");
     error.statusCode = 500;
     throw error;
   }
 
-  const ticket = await googleClient.verifyIdToken({
-    idToken: credential,
-    audience: googleClientId,
-  });
+  let ticket;
+  try {
+    ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: googleClientIds,
+    });
+  } catch {
+    const error = new Error("Google token verification failed. Check GOOGLE_CLIENT_ID configuration.");
+    error.statusCode = 401;
+    throw error;
+  }
 
   const payload = ticket.getPayload();
   const email = normalizeEmail(payload?.email);

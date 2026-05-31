@@ -3,7 +3,9 @@ import { Link, useNavigate, useParams } from "react-router";
 import { Download, Edit3, FileImage, MonitorSmartphone, SquarePen } from "lucide-react";
 import MockupCard from "../components/MockupCard";
 import { getAllMockups } from "../imports/mockupStore";
+import { openGuestAccessModal } from "../imports/guestAccessModalStore";
 import { fetchJsonWithRetry } from "../lib/apiRetry";
+import { markGuestDownloadUsed, requireSigninForExtraDownload } from "../lib/guestDownloadAccess";
 import { applySeo, removeJsonLdMany, toAbsoluteSeoUrl, upsertJsonLd } from "../lib/seo";
 
 export default function ProductDetails() {
@@ -217,6 +219,10 @@ export default function ProductDetails() {
   }
   
   const handleDownload = async () => {
+    if (requireSigninForExtraDownload()) {
+      return;
+    }
+
     if (!isDownloadEnabled) {
       alert("Download is disabled for this product.");
       return;
@@ -235,6 +241,11 @@ export default function ProductDetails() {
         } catch {
           // Keep default message when response is not JSON.
         }
+        if (response.status === 401) {
+          openGuestAccessModal();
+          setIsDownloading(false);
+          return;
+        }
         throw new Error(message);
       }
       
@@ -250,6 +261,7 @@ export default function ProductDetails() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      markGuestDownloadUsed();
 
       // Reflect the successful download instantly in UI.
       setMockups((prev) =>

@@ -11,7 +11,6 @@ const sortOptions: SortOption[] = [
   { name: "All", value: "all" },
   { name: "Popular", value: "popular" },
   { name: "Latest", value: "latest" },
-  { name: "Most Downloaded", value: "downloads" },
 ];
 
 interface SortDropdownProps {

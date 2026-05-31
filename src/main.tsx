@@ -51,7 +51,7 @@ function installChunkErrorRecovery() {
 
 installChunkErrorRecovery();
 
-const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+const googleClientId = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "").trim();
 const app = googleClientId ? (
   <GoogleOAuthProvider clientId={googleClientId} locale="en">
     <App />

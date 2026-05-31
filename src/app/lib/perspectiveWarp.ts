@@ -5,12 +5,23 @@ export type PerspectiveCorners = {
   bottomRight: { x: number; y: number };
 };
 
+export type WrapEdgeKey = "top" | "right" | "bottom" | "left";
+export type WrapHandleKey = "start" | "end";
+export type WrapBezierHandles = Record<WrapEdgeKey, Record<WrapHandleKey, { x: number; y: number }>>;
+
 export const DEFAULT_CORNERS: PerspectiveCorners = {
   topLeft: { x: 0, y: 0 },
   topRight: { x: 1, y: 0 },
   bottomLeft: { x: 0, y: 1 },
   bottomRight: { x: 1, y: 1 },
 };
+
+export const createDefaultWrapHandles = (): WrapBezierHandles => ({
+  top: { start: { x: 0.25, y: 0 }, end: { x: 0.75, y: 0 } },
+  right: { start: { x: 1, y: 0.25 }, end: { x: 1, y: 0.75 } },
+  bottom: { start: { x: 0.75, y: 1 }, end: { x: 0.25, y: 1 } },
+  left: { start: { x: 0, y: 0.75 }, end: { x: 0, y: 0.25 } },
+});
 
 export function isDefaultCorners(c: PerspectiveCorners): boolean {
   return (
@@ -59,6 +70,102 @@ export function computeMatrix3dStyle(corners: PerspectiveCorners, w: number, h: 
   const h5 = y0;
 
   return `matrix3d(${h0},${h3},0,${h6}, ${h1},${h4},0,${h7}, 0,0,1,0, ${h2},${h5},0,1)`;
+}
+
+function cubicBezierPoint(
+  p0: { x: number; y: number },
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number },
+  amount: number,
+) {
+  const inv = 1 - amount;
+  const a = inv * inv * inv;
+  const b = 3 * inv * inv * amount;
+  const c = 3 * inv * amount * amount;
+  const d = amount * amount * amount;
+  return {
+    x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+    y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+  };
+}
+
+export function drawCanvasBezierMeshWarp(
+  dstCtx: CanvasRenderingContext2D,
+  srcCanvas: HTMLCanvasElement,
+  corners: PerspectiveCorners,
+  wrapHandles: WrapBezierHandles,
+  canvasW: number,
+  canvasH: number,
+  subdivisions = 32,
+) {
+  const toCanvasPoint = (point: { x: number; y: number }) => ({
+    x: point.x * canvasW,
+    y: point.y * canvasH,
+  });
+  const cornerPoints = {
+    topLeft: toCanvasPoint(corners.topLeft),
+    topRight: toCanvasPoint(corners.topRight),
+    bottomLeft: toCanvasPoint(corners.bottomLeft),
+    bottomRight: toCanvasPoint(corners.bottomRight),
+  };
+  const edgePoint = (edgeKey: WrapEdgeKey, amount: number) => {
+    if (edgeKey === "top") {
+      return cubicBezierPoint(cornerPoints.topLeft, toCanvasPoint(wrapHandles.top.start), toCanvasPoint(wrapHandles.top.end), cornerPoints.topRight, amount);
+    }
+    if (edgeKey === "right") {
+      return cubicBezierPoint(cornerPoints.topRight, toCanvasPoint(wrapHandles.right.start), toCanvasPoint(wrapHandles.right.end), cornerPoints.bottomRight, amount);
+    }
+    if (edgeKey === "bottom") {
+      return cubicBezierPoint(cornerPoints.bottomRight, toCanvasPoint(wrapHandles.bottom.start), toCanvasPoint(wrapHandles.bottom.end), cornerPoints.bottomLeft, amount);
+    }
+    return cubicBezierPoint(cornerPoints.bottomLeft, toCanvasPoint(wrapHandles.left.start), toCanvasPoint(wrapHandles.left.end), cornerPoints.topLeft, amount);
+  };
+  const meshPoint = (u: number, v: number) => {
+    const top = edgePoint("top", u);
+    const bottom = edgePoint("bottom", 1 - u);
+    const left = edgePoint("left", 1 - v);
+    const right = edgePoint("right", v);
+    const bilinear = {
+      x:
+        (1 - u) * (1 - v) * cornerPoints.topLeft.x +
+        u * (1 - v) * cornerPoints.topRight.x +
+        (1 - u) * v * cornerPoints.bottomLeft.x +
+        u * v * cornerPoints.bottomRight.x,
+      y:
+        (1 - u) * (1 - v) * cornerPoints.topLeft.y +
+        u * (1 - v) * cornerPoints.topRight.y +
+        (1 - u) * v * cornerPoints.bottomLeft.y +
+        u * v * cornerPoints.bottomRight.y,
+    };
+    return {
+      x: (1 - v) * top.x + v * bottom.x + (1 - u) * left.x + u * right.x - bilinear.x,
+      y: (1 - v) * top.y + v * bottom.y + (1 - u) * left.y + u * right.y - bilinear.y,
+    };
+  };
+
+  dstCtx.imageSmoothingEnabled = true;
+  dstCtx.imageSmoothingQuality = "high";
+
+  for (let row = 0; row < subdivisions; row++) {
+    for (let col = 0; col < subdivisions; col++) {
+      const u0 = col / subdivisions;
+      const u1 = (col + 1) / subdivisions;
+      const v0 = row / subdivisions;
+      const v1 = (row + 1) / subdivisions;
+      const sx0 = u0 * canvasW;
+      const sx1 = u1 * canvasW;
+      const sy0 = v0 * canvasH;
+      const sy1 = v1 * canvasH;
+      const d00 = meshPoint(u0, v0);
+      const d10 = meshPoint(u1, v0);
+      const d01 = meshPoint(u0, v1);
+      const d11 = meshPoint(u1, v1);
+
+      drawTexturedTriangle(dstCtx, srcCanvas, sx0, sy0, sx1, sy0, sx0, sy1, d00.x, d00.y, d10.x, d10.y, d01.x, d01.y);
+      drawTexturedTriangle(dstCtx, srcCanvas, sx1, sy0, sx1, sy1, sx0, sy1, d10.x, d10.y, d11.x, d11.y, d01.x, d01.y);
+    }
+  }
 }
 
 export function drawCanvasWarp(

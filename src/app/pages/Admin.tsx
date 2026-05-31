@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { Stage, Layer, Image as KonvaImage, Group, Rect, Circle, Line, Text as KonvaText, Transformer } from "react-konva";
 import { SubscribersPanel } from "../components/SubscribersPanel";
 import {
 	LayoutDashboard,
@@ -25,11 +26,13 @@ import {
 	Check,
 	ShieldCheck,
 	LogOut,
-	Move,
 	Grid3X3,
 	Bell,
+	MousePointer2,
+	Hand,
 } from "lucide-react";
 import { readAdminSession, clearAdminSession } from "../imports/adminAuthStore";
+import { drawCanvasWarp } from "../lib/perspectiveWarp";
 import mockyoLogo from "../../assets/mockyo-logo.svg";
 
 type View =
@@ -88,12 +91,23 @@ type PerspectiveCorners = {
 	bottomRight: { x: number; y: number };
 };
 
+type WrapEdgeKey = "top" | "right" | "bottom" | "left";
+type WrapHandleKey = "start" | "end";
+type WrapBezierHandles = Record<WrapEdgeKey, Record<WrapHandleKey, { x: number; y: number }>>;
+
 const DEFAULT_CORNERS: PerspectiveCorners = {
 	topLeft: { x: 0, y: 0 },
 	topRight: { x: 1, y: 0 },
 	bottomLeft: { x: 0, y: 1 },
 	bottomRight: { x: 1, y: 1 },
 };
+
+const createDefaultWrapHandles = (): WrapBezierHandles => ({
+	top: { start: { x: 0.25, y: 0 }, end: { x: 0.75, y: 0 } },
+	right: { start: { x: 1, y: 0.25 }, end: { x: 1, y: 0.75 } },
+	bottom: { start: { x: 0.75, y: 1 }, end: { x: 0.25, y: 1 } },
+	left: { start: { x: 0, y: 0.75 }, end: { x: 0, y: 0.25 } },
+});
 
 const isDefaultCorners = (c: PerspectiveCorners): boolean => (
 	c.topLeft.x === 0 && c.topLeft.y === 0
@@ -141,6 +155,342 @@ const computeMatrix3dStyle = (corners: PerspectiveCorners, w: number, h: number)
 
 	return `matrix3d(${h0},${h3},0,${h6}, ${h1},${h4},0,${h7}, 0,0,1,0, ${h2},${h5},0,1)`;
 };
+
+const useCanvasImage = (src?: string | null) => {
+	const [image, setImage] = useState<HTMLImageElement | null>(null);
+
+	useEffect(() => {
+		if (!src) {
+			setImage(null);
+			return;
+		}
+
+		let isActive = true;
+		const img = new window.Image();
+		img.crossOrigin = "anonymous";
+		img.onload = () => {
+			if (isActive) setImage(img);
+		};
+		img.onerror = () => {
+			if (isActive) setImage(null);
+		};
+		img.src = src;
+
+		return () => {
+			isActive = false;
+		};
+	}, [src]);
+
+	return image;
+};
+
+function KonvaLoadedImage({
+	src,
+	x,
+	y,
+	width,
+	height,
+	opacity = 1,
+	globalCompositeOperation,
+}: {
+	src: string;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	opacity?: number;
+	globalCompositeOperation?: GlobalCompositeOperation;
+}) {
+	const image = useCanvasImage(src);
+	if (!image) return null;
+	const scale = Math.max(width / image.width, height / image.height);
+	const cropWidth = width / scale;
+	const cropHeight = height / scale;
+	const cropX = Math.max(0, (image.width - cropWidth) / 2);
+	const cropY = Math.max(0, (image.height - cropHeight) / 2);
+
+	return (
+		<KonvaImage
+			image={image}
+			x={x}
+			y={y}
+			width={width}
+			height={height}
+			crop={{ x: cropX, y: cropY, width: cropWidth, height: cropHeight }}
+			opacity={opacity}
+			globalCompositeOperation={globalCompositeOperation}
+			listening={false}
+		/>
+	);
+}
+
+const cubicBezierPoint = (
+	p0: { x: number; y: number },
+	p1: { x: number; y: number },
+	p2: { x: number; y: number },
+	p3: { x: number; y: number },
+	amount: number,
+) => {
+	const inv = 1 - amount;
+	const a = inv * inv * inv;
+	const b = 3 * inv * inv * amount;
+	const c = 3 * inv * amount * amount;
+	const d = amount * amount * amount;
+	return {
+		x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+		y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+	};
+};
+
+const drawWarpTriangle = (
+	ctx: CanvasRenderingContext2D,
+	source: HTMLCanvasElement,
+	s0: { x: number; y: number },
+	s1: { x: number; y: number },
+	s2: { x: number; y: number },
+	d0: { x: number; y: number },
+	d1: { x: number; y: number },
+	d2: { x: number; y: number },
+) => {
+	const denom = (s1.x - s0.x) * (s2.y - s0.y) - (s2.x - s0.x) * (s1.y - s0.y);
+	if (Math.abs(denom) < 1e-10) return;
+
+	const a = ((d1.x - d0.x) * (s2.y - s0.y) - (d2.x - d0.x) * (s1.y - s0.y)) / denom;
+	const b = ((d1.y - d0.y) * (s2.y - s0.y) - (d2.y - d0.y) * (s1.y - s0.y)) / denom;
+	const c = ((d2.x - d0.x) * (s1.x - s0.x) - (d1.x - d0.x) * (s2.x - s0.x)) / denom;
+	const d = ((d2.y - d0.y) * (s1.x - s0.x) - (d1.y - d0.y) * (s2.x - s0.x)) / denom;
+	const e = d0.x - a * s0.x - c * s0.y;
+	const f = d0.y - b * s0.x - d * s0.y;
+
+	ctx.save();
+	ctx.beginPath();
+	ctx.moveTo(d0.x, d0.y);
+	ctx.lineTo(d1.x, d1.y);
+	ctx.lineTo(d2.x, d2.y);
+	ctx.closePath();
+	ctx.clip();
+	ctx.transform(a, b, c, d, e, f);
+	ctx.drawImage(source, 0, 0);
+	ctx.restore();
+};
+
+const drawCanvasBezierMeshWarp = (
+	dstCtx: CanvasRenderingContext2D,
+	srcCanvas: HTMLCanvasElement,
+	corners: PerspectiveCorners,
+	wrapHandles: WrapBezierHandles,
+	canvasW: number,
+	canvasH: number,
+	subdivisions = 32,
+) => {
+	const toCanvasPoint = (point: { x: number; y: number }) => ({
+		x: point.x * canvasW,
+		y: point.y * canvasH,
+	});
+	const cornerPoints = {
+		topLeft: toCanvasPoint(corners.topLeft),
+		topRight: toCanvasPoint(corners.topRight),
+		bottomLeft: toCanvasPoint(corners.bottomLeft),
+		bottomRight: toCanvasPoint(corners.bottomRight),
+	};
+	const edgePoint = (edgeKey: WrapEdgeKey, amount: number) => {
+		if (edgeKey === "top") {
+			return cubicBezierPoint(
+				cornerPoints.topLeft,
+				toCanvasPoint(wrapHandles.top.start),
+				toCanvasPoint(wrapHandles.top.end),
+				cornerPoints.topRight,
+				amount,
+			);
+		}
+		if (edgeKey === "right") {
+			return cubicBezierPoint(
+				cornerPoints.topRight,
+				toCanvasPoint(wrapHandles.right.start),
+				toCanvasPoint(wrapHandles.right.end),
+				cornerPoints.bottomRight,
+				amount,
+			);
+		}
+		if (edgeKey === "bottom") {
+			return cubicBezierPoint(
+				cornerPoints.bottomRight,
+				toCanvasPoint(wrapHandles.bottom.start),
+				toCanvasPoint(wrapHandles.bottom.end),
+				cornerPoints.bottomLeft,
+				amount,
+			);
+		}
+		return cubicBezierPoint(
+			cornerPoints.bottomLeft,
+			toCanvasPoint(wrapHandles.left.start),
+			toCanvasPoint(wrapHandles.left.end),
+			cornerPoints.topLeft,
+			amount,
+		);
+	};
+	const meshPoint = (u: number, v: number) => {
+		const top = edgePoint("top", u);
+		const bottom = edgePoint("bottom", 1 - u);
+		const left = edgePoint("left", 1 - v);
+		const right = edgePoint("right", v);
+		const bilinear = {
+			x:
+				(1 - u) * (1 - v) * cornerPoints.topLeft.x +
+				u * (1 - v) * cornerPoints.topRight.x +
+				(1 - u) * v * cornerPoints.bottomLeft.x +
+				u * v * cornerPoints.bottomRight.x,
+			y:
+				(1 - u) * (1 - v) * cornerPoints.topLeft.y +
+				u * (1 - v) * cornerPoints.topRight.y +
+				(1 - u) * v * cornerPoints.bottomLeft.y +
+				u * v * cornerPoints.bottomRight.y,
+		};
+		return {
+			x: (1 - v) * top.x + v * bottom.x + (1 - u) * left.x + u * right.x - bilinear.x,
+			y: (1 - v) * top.y + v * bottom.y + (1 - u) * left.y + u * right.y - bilinear.y,
+		};
+	};
+
+	dstCtx.imageSmoothingEnabled = true;
+	dstCtx.imageSmoothingQuality = "high";
+
+	for (let row = 0; row < subdivisions; row += 1) {
+		for (let col = 0; col < subdivisions; col += 1) {
+			const u0 = col / subdivisions;
+			const u1 = (col + 1) / subdivisions;
+			const v0 = row / subdivisions;
+			const v1 = (row + 1) / subdivisions;
+			const s00 = { x: u0 * canvasW, y: v0 * canvasH };
+			const s10 = { x: u1 * canvasW, y: v0 * canvasH };
+			const s01 = { x: u0 * canvasW, y: v1 * canvasH };
+			const s11 = { x: u1 * canvasW, y: v1 * canvasH };
+			const d00 = meshPoint(u0, v0);
+			const d10 = meshPoint(u1, v0);
+			const d01 = meshPoint(u0, v1);
+			const d11 = meshPoint(u1, v1);
+
+			drawWarpTriangle(dstCtx, srcCanvas, s00, s10, s01, d00, d10, d01);
+			drawWarpTriangle(dstCtx, srcCanvas, s10, s11, s01, d10, d11, d01);
+		}
+	}
+};
+
+function MaskedSizePreview({
+	sizeSrc,
+	maskSrc,
+	artW,
+	artH,
+	x,
+	y,
+	boxW,
+	boxH,
+	rotation,
+	corners,
+	wrapHandles,
+	opacity,
+}: {
+	sizeSrc: string;
+	maskSrc: string;
+	artW: number;
+	artH: number;
+	x: number;
+	y: number;
+	boxW: number;
+	boxH: number;
+	rotation: number;
+	corners: PerspectiveCorners;
+	wrapHandles?: WrapBezierHandles | null;
+	opacity: number;
+}) {
+	const [previewCanvas, setPreviewCanvas] = useState<HTMLCanvasElement | null>(null);
+
+	useEffect(() => {
+		let isActive = true;
+
+		const loadImage = (src: string) =>
+			new Promise<HTMLImageElement>((resolve, reject) => {
+				const image = new window.Image();
+				image.crossOrigin = "anonymous";
+				image.onload = () => resolve(image);
+				image.onerror = reject;
+				image.src = src;
+			});
+
+		const drawPreview = async () => {
+			try {
+				const [sizeImage, maskImage] = await Promise.all([loadImage(sizeSrc), loadImage(maskSrc)]);
+				const fullCanvas = document.createElement("canvas");
+				fullCanvas.width = Math.max(1, Math.round(artW));
+				fullCanvas.height = Math.max(1, Math.round(artH));
+				const fullCtx = fullCanvas.getContext("2d");
+				if (!fullCtx) return;
+
+				const layerCanvas = document.createElement("canvas");
+				layerCanvas.width = Math.max(1, Math.round(boxW));
+				layerCanvas.height = Math.max(1, Math.round(boxH));
+				const layerCtx = layerCanvas.getContext("2d");
+				if (!layerCtx) return;
+				layerCtx.drawImage(sizeImage, 0, 0, layerCanvas.width, layerCanvas.height);
+
+				let outputCanvas = layerCanvas;
+				if (wrapHandles) {
+					const warped = document.createElement("canvas");
+					warped.width = layerCanvas.width;
+					warped.height = layerCanvas.height;
+					const warpedCtx = warped.getContext("2d");
+					if (warpedCtx) {
+						drawCanvasBezierMeshWarp(warpedCtx, layerCanvas, corners, wrapHandles, warped.width, warped.height);
+						outputCanvas = warped;
+					}
+				} else if (!isDefaultCorners(corners)) {
+					const warped = document.createElement("canvas");
+					warped.width = layerCanvas.width;
+					warped.height = layerCanvas.height;
+					const warpedCtx = warped.getContext("2d");
+					if (warpedCtx) {
+						drawCanvasWarp(warpedCtx, layerCanvas, corners, warped.width, warped.height);
+						outputCanvas = warped;
+					}
+				}
+
+				fullCtx.save();
+				fullCtx.translate(artW / 2 + x, artH / 2 + y);
+				fullCtx.rotate((rotation * Math.PI) / 180);
+				fullCtx.drawImage(outputCanvas, -outputCanvas.width / 2, -outputCanvas.height / 2);
+				fullCtx.restore();
+
+				fullCtx.globalCompositeOperation = "destination-in";
+				fullCtx.drawImage(maskImage, 0, 0, artW, artH);
+				fullCtx.globalCompositeOperation = "source-over";
+
+				if (isActive) setPreviewCanvas(fullCanvas);
+			} catch {
+				if (isActive) setPreviewCanvas(null);
+			}
+		};
+
+		void drawPreview();
+
+		return () => {
+			isActive = false;
+		};
+	}, [sizeSrc, maskSrc, artW, artH, x, y, boxW, boxH, rotation, corners, wrapHandles]);
+
+	if (!previewCanvas) return null;
+
+	return (
+		<KonvaImage
+			image={previewCanvas}
+			x={0}
+			y={0}
+			width={artW}
+			height={artH}
+			opacity={opacity}
+			listening={false}
+		/>
+	);
+}
 
 type UserRow = {
 	id: string;
@@ -524,12 +874,15 @@ export default function Admin() {
 	const [selectedDesignAreaId, setSelectedDesignAreaId] = useState<string | null>(null);
 	const [visibleDesignAreas, setVisibleDesignAreas] = useState<Set<string>>(new Set());
 	const [perspectiveCornersById, setPerspectiveCornersById] = useState<Record<string, PerspectiveCorners>>({});
+	const [wrapHandlesById, setWrapHandlesById] = useState<Record<string, WrapBezierHandles>>({});
 	const [sizeImageByAreaId, setSizeImageByAreaId] = useState<Record<string, { src: string; file: File | null }>>({});
 	const [sizeImageNaturalSizeById, setSizeImageNaturalSizeById] = useState<Record<string, { w: number; h: number }>>({});
 	const [sizeTransformByAreaId, setSizeTransformByAreaId] = useState<Record<string, { x: number; y: number; scale: number; rotation: number }>>({});
 	const [sizeTransformEditingAreaId, setSizeTransformEditingAreaId] = useState<string | null>(null);
-	const [sizeEditMode, setSizeEditMode] = useState<"normal" | "perspective">("normal");
+	const [sizeEditMode, setSizeEditMode] = useState<"normal" | "perspective" | "wrap">("normal");
 	const sizeImageInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+	const sizeTransformNodeRefs = useRef<Record<string, any>>({});
+	const sizeTransformerRef = useRef<any>(null);
 	const isSizeDragging = useRef(false);
 	const sizeDragStart = useRef({ mouseX: 0, mouseY: 0, x: 0, y: 0, areaId: "" });
 	const isSizeScaling = useRef(false);
@@ -546,6 +899,8 @@ export default function Admin() {
 	const [previewColor, setPreviewColor] = useState("#ff6b35");
 	const [artboardOffset, setArtboardOffset] = useState({ x: 0, y: 0 });
 	const [artboardZoom, setArtboardZoom] = useState(1);
+	const [artboardStageSize, setArtboardStageSize] = useState({ w: 680, h: 680 });
+	const [artboardBaseNaturalSize, setArtboardBaseNaturalSize] = useState<{ w: number; h: number } | null>(null);
 	const [isDraggingArtboard, setIsDraggingArtboard] = useState(false);
 	const [isHandToolEnabled, setIsHandToolEnabled] = useState(false);
 	const [artboardPreview, setArtboardPreview] = useState("");
@@ -624,6 +979,34 @@ export default function Admin() {
 	const artboardStageRef = useRef<HTMLDivElement | null>(null);
 	const draggableArtboardRef = useRef<HTMLDivElement | null>(null);
 	const artboardDragOffsetRef = useRef({ x: 0, y: 0 });
+	const visibleArtboardLayerImages = useMemo(
+		() => artboardLayerImages.filter((item) => visibleLayers.has(item.id)),
+		[artboardLayerImages, visibleLayers],
+	);
+	const artboardRenderWidth = Math.min(610, Math.max(1, artboardStageSize.w - 70));
+	const artboardRenderHeight = artboardBaseNaturalSize?.w
+		? Math.max(1, artboardRenderWidth * (artboardBaseNaturalSize.h / artboardBaseNaturalSize.w))
+		: Math.round(671 * (artboardRenderWidth / 610));
+
+	const clampKonvaArtboardOffset = (nextX: number, nextY: number) => {
+		const scaledWidth = artboardRenderWidth * artboardZoom;
+		const scaledHeight = artboardRenderHeight * artboardZoom;
+		const edgePadding = 48;
+
+		return {
+			x: Math.min(Math.max(edgePadding - scaledWidth, nextX), artboardStageSize.w - edgePadding),
+			y: Math.min(Math.max(edgePadding - scaledHeight, nextY), artboardStageSize.h - edgePadding),
+		};
+	};
+
+	const getKonvaArtboardPointer = (stage: any) => {
+		const pointer = stage?.getPointerPosition?.();
+		if (!pointer) return null;
+		return {
+			x: (pointer.x - artboardOffset.x) / artboardZoom,
+			y: (pointer.y - artboardOffset.y) / artboardZoom,
+		};
+	};
 
 	const applyQuickRange = (nextRange: QuickRange) => {
 		setQuickRange(nextRange);
@@ -1318,24 +1701,23 @@ export default function Admin() {
 			});
 
 			// ── Design area images array ──────────────────────────────────
-			const existingDesignAreaImages: UploadedImage[] = Array.isArray(item?.designAreaImages)
-				? item.designAreaImages
-						.filter((d: any) => Boolean(d?.url))
-						.map((d: any, index: number) => ({
-							id: `existing-design-area-${index}`,
-							name: d.label || `design-area-${index + 1}`,
-							displayName: d.label || `design-area-${index + 1}`,
-							src: d.url,
-							file: null,
-						}))
+			const designAreaEntries = Array.isArray(item?.designAreaImages)
+				? item.designAreaImages.filter((d: any) => Boolean(d?.url))
 				: [];
+			const existingDesignAreaImages: UploadedImage[] = designAreaEntries.map((d: any, index: number) => ({
+				id: `existing-design-area-${index}`,
+				name: d.label || `design-area-${index + 1}`,
+				displayName: d.label || `design-area-${index + 1}`,
+				src: d.url,
+				file: null,
+			}));
 			setDesignAreaAssets(existingDesignAreaImages);
 			setVisibleDesignAreas(new Set(existingDesignAreaImages.map((d) => d.id)));
 
 			// Load perspective corners for each design area
 			const loadedCorners: Record<string, PerspectiveCorners> = {};
-			if (Array.isArray(item?.designAreaImages)) {
-				item.designAreaImages.forEach((d: any, index: number) => {
+			if (designAreaEntries.length) {
+				designAreaEntries.forEach((d: any, index: number) => {
 					if (d?.perspectiveCorners) {
 						loadedCorners[`existing-design-area-${index}`] = {
 							topLeft: { x: d.perspectiveCorners.topLeft?.x ?? 0, y: d.perspectiveCorners.topLeft?.y ?? 0 },
@@ -1348,10 +1730,39 @@ export default function Admin() {
 			}
 			setPerspectiveCornersById(loadedCorners);
 
+			// Load wrap handles for each design area
+			const loadedWrapHandles: Record<string, WrapBezierHandles> = {};
+			if (designAreaEntries.length) {
+				designAreaEntries.forEach((d: any, index: number) => {
+					if (d?.wrapHandles) {
+						const defaults = createDefaultWrapHandles();
+						loadedWrapHandles[`existing-design-area-${index}`] = {
+							top: {
+								start: { x: d.wrapHandles.top?.start?.x ?? defaults.top.start.x, y: d.wrapHandles.top?.start?.y ?? defaults.top.start.y },
+								end: { x: d.wrapHandles.top?.end?.x ?? defaults.top.end.x, y: d.wrapHandles.top?.end?.y ?? defaults.top.end.y },
+							},
+							right: {
+								start: { x: d.wrapHandles.right?.start?.x ?? defaults.right.start.x, y: d.wrapHandles.right?.start?.y ?? defaults.right.start.y },
+								end: { x: d.wrapHandles.right?.end?.x ?? defaults.right.end.x, y: d.wrapHandles.right?.end?.y ?? defaults.right.end.y },
+							},
+							bottom: {
+								start: { x: d.wrapHandles.bottom?.start?.x ?? defaults.bottom.start.x, y: d.wrapHandles.bottom?.start?.y ?? defaults.bottom.start.y },
+								end: { x: d.wrapHandles.bottom?.end?.x ?? defaults.bottom.end.x, y: d.wrapHandles.bottom?.end?.y ?? defaults.bottom.end.y },
+							},
+							left: {
+								start: { x: d.wrapHandles.left?.start?.x ?? defaults.left.start.x, y: d.wrapHandles.left?.start?.y ?? defaults.left.start.y },
+								end: { x: d.wrapHandles.left?.end?.x ?? defaults.left.end.x, y: d.wrapHandles.left?.end?.y ?? defaults.left.end.y },
+							},
+						};
+					}
+				});
+			}
+			setWrapHandlesById(loadedWrapHandles);
+
 			// Load size images for each design area
 			const loadedSizeImages: Record<string, { src: string; file: File | null }> = {};
-			if (Array.isArray(item?.designAreaImages)) {
-				item.designAreaImages.forEach((d: any, index: number) => {
+			if (designAreaEntries.length) {
+				designAreaEntries.forEach((d: any, index: number) => {
 					if (d?.sizeImage?.url) {
 						loadedSizeImages[`existing-design-area-${index}`] = { src: d.sizeImage.url, file: null };
 					}
@@ -1372,8 +1783,8 @@ export default function Admin() {
 
 			// Load size transforms for each design area
 			const loadedSizeTransforms: Record<string, { x: number; y: number; scale: number; rotation: number }> = {};
-			if (Array.isArray(item?.designAreaImages)) {
-				item.designAreaImages.forEach((d: any, index: number) => {
+			if (designAreaEntries.length) {
+				designAreaEntries.forEach((d: any, index: number) => {
 					if (d?.sizeTransform && (d.sizeTransform.x !== 0 || d.sizeTransform.y !== 0 || d.sizeTransform.scale !== 1 || d.sizeTransform.rotation !== 0)) {
 						loadedSizeTransforms[`existing-design-area-${index}`] = {
 							x: d.sizeTransform.x ?? 0,
@@ -1608,6 +2019,7 @@ export default function Admin() {
 		setSelectedDesignAreaId(null);
 		setVisibleDesignAreas(new Set());
 		setPerspectiveCornersById({});
+		setWrapHandlesById({});
 		setSizeImageByAreaId({});
 		setSizeImageNaturalSizeById({});
 		setSizeTransformByAreaId({});
@@ -1773,6 +2185,10 @@ export default function Admin() {
 				setSelectedLayerImageId(null);
 				setSelectedColorAreaId(null);
 				setSelectedDefaultImageId(null);
+				if (sizeImageByAreaId[next]) {
+					setSizeTransformEditingAreaId(next);
+					setSizeEditMode("normal");
+				}
 			}
 			return;
 		}
@@ -2131,14 +2547,74 @@ export default function Admin() {
 		if (view !== "add-product") return;
 
 		const stage = artboardStageRef.current;
-		const artboard = draggableArtboardRef.current;
-		if (!stage || !artboard) return;
+		if (!stage) return;
 
-		setArtboardOffset({
-			x: Math.max(0, (stage.clientWidth - artboard.offsetWidth) / 2),
-			y: Math.max(0, (stage.clientHeight - artboard.offsetHeight) / 2),
-		});
+		const updateStageSize = () => {
+			setArtboardStageSize({
+				w: Math.max(1, stage.clientWidth || 680),
+				h: Math.max(1, stage.clientHeight || 680),
+			});
+		};
+
+		updateStageSize();
+		const resizeObserver = new ResizeObserver(updateStageSize);
+		resizeObserver.observe(stage);
+
+		return () => resizeObserver.disconnect();
 	}, [view]);
+
+	useEffect(() => {
+		if (view !== "add-product") return;
+		const stage = artboardStageRef.current;
+		if (!stage) return;
+
+		const nextX = Math.max(0, (artboardStageSize.w - artboardRenderWidth * artboardZoom) / 2);
+		const nextY = Math.max(0, (artboardStageSize.h - artboardRenderHeight * artboardZoom) / 2);
+		setArtboardOffset({
+			x: nextX,
+			y: nextY,
+		});
+	}, [view, artboardStageSize.w, artboardStageSize.h, artboardRenderWidth, artboardRenderHeight]);
+
+	useEffect(() => {
+		const firstVisible = visibleArtboardLayerImages[0];
+		if (!firstVisible?.src) {
+			setArtboardBaseNaturalSize(null);
+			return;
+		}
+
+		let isActive = true;
+		const image = new window.Image();
+		image.onload = () => {
+			if (isActive) {
+				setArtboardBaseNaturalSize({
+					w: image.naturalWidth || 610,
+					h: image.naturalHeight || 671,
+				});
+			}
+		};
+		image.onerror = () => {
+			if (isActive) setArtboardBaseNaturalSize(null);
+		};
+		image.src = firstVisible.src;
+
+		return () => {
+			isActive = false;
+		};
+	}, [visibleArtboardLayerImages]);
+
+	useEffect(() => {
+		const transformer = sizeTransformerRef.current;
+		if (!transformer) return;
+
+		const node =
+			sizeTransformEditingAreaId && sizeEditMode === "normal" && !isHandToolEnabled
+				? sizeTransformNodeRefs.current[sizeTransformEditingAreaId]
+				: null;
+
+		transformer.nodes(node ? [node] : []);
+		transformer.getLayer()?.batchDraw();
+	}, [sizeTransformEditingAreaId, sizeEditMode, isHandToolEnabled, sizeImageByAreaId]);
 
 	useEffect(() => {
 		if (isHandToolEnabled) return;
@@ -2321,16 +2797,6 @@ export default function Admin() {
 
 		// All visible artboard layers in current order
 		const visibleArtboardLayers = artboardLayerImages.filter((item) => visibleLayers.has(item.id));
-		// Entries that actually have a new file (for fallback view-asset helpers)
-		const artboardFileEntries = visibleArtboardLayers
-			.filter((item) => Boolean(item.file))
-			.map((item) => ({ item, mode: layerBlendModes[item.id] || "normal" as PreviewBlendMode }));
-		const firstArtboardFile = artboardFileEntries[0]?.item.file ?? null;
-		const firstBlendFileByMode = (mode: BlendLayerKey) =>
-			artboardFileEntries.find((entry) => entry.mode === mode)?.item.file ?? null;
-		const topNormalArtboardFile =
-			[...artboardFileEntries].reverse().find((entry) => entry.mode === "normal")?.item.file ?? null;
-
 		const hasNewThumbnailFile = thumbnailAssets.some((item) => Boolean(item.file));
 
 		if (!thumbnailAssets.length || (!editingProductId && !hasNewThumbnailFile)) {
@@ -2375,14 +2841,11 @@ export default function Admin() {
 				});
 				formData.append("artboardLayerMeta", JSON.stringify(artboardLayerMeta));
 
-				const firstUploadedThumbnail = thumbnailAssets.find((item) => item.file)?.file ?? null;
-				const primaryBaseFile = viewAssets.primary.baseMockup?.file ?? firstArtboardFile ?? firstUploadedThumbnail;
-				if (primaryBaseFile) {
-					formData.append("primaryBaseMockup", primaryBaseFile);
+				if (viewAssets.primary.baseMockup?.file) {
+					formData.append("primaryBaseMockup", viewAssets.primary.baseMockup.file);
 				}
-				const primaryOverlayFile = viewAssets.primary.overlayImage?.file ?? topNormalArtboardFile;
-				if (primaryOverlayFile) {
-					formData.append("primaryOverlayImage", primaryOverlayFile);
+				if (viewAssets.primary.overlayImage?.file) {
+					formData.append("primaryOverlayImage", viewAssets.primary.overlayImage.file);
 				}
 				if (viewAssets.front.baseMockup?.file) {
 					formData.append("frontBaseMockup", viewAssets.front.baseMockup.file);
@@ -2398,9 +2861,9 @@ export default function Admin() {
 				}
 
 				(["multiply", "screen", "overlay"] as BlendLayerKey[]).forEach((layer) => {
-					const mappedLayerFile = blendAssets[layer]?.file ?? firstBlendFileByMode(layer);
-					if (mappedLayerFile) {
-						formData.append(layer, mappedLayerFile);
+					const asset = blendAssets[layer];
+					if (asset?.file) {
+						formData.append(layer, asset.file);
 					}
 				});
 
@@ -2418,6 +2881,8 @@ export default function Admin() {
 						: { url: item.src, label };
 					const corners = perspectiveCornersById[item.id];
 					if (corners && !isDefaultCorners(corners)) base.perspectiveCorners = corners;
+					const wrapHandles = wrapHandlesById[item.id];
+					if (wrapHandles) base.wrapHandles = wrapHandles;
 					const st = sizeTransformByAreaId[item.id];
 					if (st && (st.x !== 0 || st.y !== 0 || st.scale !== 1 || st.rotation !== 0)) base.sizeTransform = st;
 					const si = sizeImageByAreaId[item.id];
@@ -2530,14 +2995,11 @@ export default function Admin() {
 			});
 			formData.append("artboardLayerMeta", JSON.stringify(createLayerMeta));
 
-			const firstUploadedThumbnail = thumbnailAssets.find((item) => item.file)?.file ?? null;
-			const primaryBaseFile = viewAssets.primary.baseMockup?.file ?? firstArtboardFile ?? firstUploadedThumbnail;
-			if (primaryBaseFile) {
-				formData.append("primaryBaseMockup", primaryBaseFile);
+			if (viewAssets.primary.baseMockup?.file) {
+				formData.append("primaryBaseMockup", viewAssets.primary.baseMockup.file);
 			}
-			const primaryOverlayFile = viewAssets.primary.overlayImage?.file ?? topNormalArtboardFile;
-			if (primaryOverlayFile) {
-				formData.append("primaryOverlayImage", primaryOverlayFile);
+			if (viewAssets.primary.overlayImage?.file) {
+				formData.append("primaryOverlayImage", viewAssets.primary.overlayImage.file);
 			}
 			if (viewAssets.front.baseMockup?.file) {
 				formData.append("frontBaseMockup", viewAssets.front.baseMockup.file);
@@ -2553,9 +3015,9 @@ export default function Admin() {
 			}
 
 			(["multiply", "screen", "overlay"] as BlendLayerKey[]).forEach((layer) => {
-				const mappedLayerFile = blendAssets[layer]?.file ?? firstBlendFileByMode(layer);
-				if (mappedLayerFile) {
-					formData.append(layer, mappedLayerFile);
+				const asset = blendAssets[layer];
+				if (asset?.file) {
+					formData.append(layer, asset.file);
 				}
 			});
 
@@ -2573,6 +3035,8 @@ export default function Admin() {
 					: { url: item.src, label };
 				const corners = perspectiveCornersById[item.id];
 				if (corners && !isDefaultCorners(corners)) base.perspectiveCorners = corners;
+				const wrapHandles = wrapHandlesById[item.id];
+				if (wrapHandles) base.wrapHandles = wrapHandles;
 				const st = sizeTransformByAreaId[item.id];
 				if (st && (st.x !== 0 || st.y !== 0 || st.scale !== 1 || st.rotation !== 0)) base.sizeTransform = st;
 				const si = sizeImageByAreaId[item.id];
@@ -3153,7 +3617,7 @@ export default function Admin() {
 									>
 										<div className="flex items-center justify-center gap-1">
 											<Upload className="h-3.5 w-3.5" />
-											Add More
+											Add Mask Area
 										</div>
 									</button>
 								</div>
@@ -3165,7 +3629,7 @@ export default function Admin() {
 								>
 									<div className="flex items-center justify-center gap-2">
 										<Upload className="h-4 w-4" />
-										Upload Images
+										Upload Mask Area
 									</div>
 								</button>
 							)}
@@ -3182,12 +3646,13 @@ export default function Admin() {
 
 						<div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-5">
 							<div className="mb-3">
-								<p className="text-sm font-medium text-zinc-100">Design Area Images</p>
+								<p className="text-sm font-medium text-zinc-100">Mask & View Areas</p>
+								<p className="mt-1 text-xs text-zinc-500">Upload a mask first, then add the view image that controls how designs sit on that product angle.</p>
 							</div>
 							{designAreaAssets.length > 0 ? (
-								<div className="space-y-2">
+								<div className="space-y-3">
 									{designAreaAssets.map((image) => (
-										<div key={image.id} className="space-y-1.5">
+										<div key={image.id} className="space-y-2">
 											<div
 												draggable
 												onDragStart={(e) => handleDesignAreaDragStart(e, image.id)}
@@ -3203,6 +3668,7 @@ export default function Admin() {
 														: "border-white/10 bg-black/30 hover:border-white/20"
 												}`}
 											>
+												<p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#FF6B35]">Mask Area</p>
 												<div className="flex items-center gap-2">
 													<p className="flex-1 truncate text-xs text-zinc-300">{image.name}</p>
 													<button
@@ -3238,23 +3704,34 @@ export default function Admin() {
 															),
 														);
 													}}
-													placeholder="Editor layer name (e.g. Upload Design for Body)"
+													placeholder="Editor layer name (e.g. Front, Sleeve, Pocket)"
 													className="w-full rounded-md border border-white/15 bg-black/35 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-[#FF6B35]"
 												/>
+												<div className="rounded-md border border-white/10 bg-black/20 p-2">
+													<div className="mb-1.5 flex items-center justify-between gap-2">
+														<div>
+															<p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-400">View Area</p>
+															<p className="mt-0.5 text-[10px] text-zinc-500">Use the angled product view here for rotate/skew setup.</p>
+														</div>
+														{sizeImageByAreaId[image.id] && (
+															<span className="shrink-0 rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">Ready</span>
+														)}
+													</div>
 												<button
 													type="button"
 													onClick={(e) => {
 														e.stopPropagation();
 														sizeImageInputRefs.current[image.id]?.click();
 													}}
-													className={`w-full rounded-md border px-2 py-1 text-[10px] font-medium transition ${
+													className={`w-full rounded-md border px-2 py-1.5 text-[10px] font-medium transition ${
 														sizeImageByAreaId[image.id]
 															? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
 															: "border-white/15 bg-black/25 text-zinc-400 hover:border-[#FF6B35]/40 hover:text-[#FF6B35]"
 													}`}
 												>
-													{sizeImageByAreaId[image.id] ? "✓ Size Uploaded — Change" : "⊞ Upload Size"}
+													{sizeImageByAreaId[image.id] ? "View Area Uploaded - Change" : "Upload View Area"}
 												</button>
+												</div>
 												<input
 													ref={(el) => { sizeImageInputRefs.current[image.id] = el; }}
 													type="file"
@@ -3270,6 +3747,8 @@ export default function Admin() {
 																...prev,
 																[image.id]: { src: dataUrl, file },
 															}));
+															setSizeTransformEditingAreaId(image.id);
+															setSizeEditMode("normal");
 															const img = new Image();
 															img.onload = () => {
 																setSizeImageNaturalSizeById((prev) => ({ ...prev, [image.id]: { w: img.naturalWidth, h: img.naturalHeight } }));
@@ -3313,7 +3792,7 @@ export default function Admin() {
 								multiple
 								onChange={(e) => handleDesignAreaUpload(e.currentTarget.files)}
 								className="hidden"
-								aria-label="Upload design area images"
+								aria-label="Upload mask area images"
 							/>
 						</div>
 
@@ -3417,528 +3896,780 @@ export default function Admin() {
 
 
 					</div>
-					<div className="xl:h-full">
-						<div className="mx-auto mb-2 flex w-full max-w-[680px] items-center justify-end gap-2">
-							<button
-								type="button"
-								onClick={() => setIsHandToolEnabled((prev) => !prev)}
-								className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition ${
-									isHandToolEnabled
-										? "border-[#FF6B35]/70 bg-[#FF6B35]/20 text-[#FF6B35]"
-										: "border-white/20 bg-white/5 text-zinc-300 hover:border-[#FF6B35]/40 hover:text-[#FF6B35]"
-								}`}
-								aria-pressed={isHandToolEnabled}
-							>
-								<Move className="h-3.5 w-3.5" />
-								Hand Tool
-							</button>
+					<div className="flex min-h-[640px] flex-col overflow-hidden rounded-xl border border-white/8 bg-[#09090E] shadow-[0_12px_30px_rgba(0,0,0,0.18)] xl:h-full">
+						<div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 bg-[#16161F] px-4 py-3">
+							<div className="flex flex-wrap items-center gap-2">
+								<button
+									type="button"
+									title="Select"
+									onClick={() => {
+										setIsHandToolEnabled(false);
+										setSizeEditMode("normal");
+									}}
+									className={`flex h-8 w-8 items-center justify-center rounded-sm border transition ${
+										!isHandToolEnabled && sizeEditMode === "normal"
+											? "border-[#FF6B35]/70 bg-[#FF6B35]/15 text-[#FF6B35]"
+											: "border-white/10 bg-white/5 text-zinc-300 hover:border-[#FF6B35]/40 hover:text-[#FF6B35]"
+									}`}
+									aria-pressed={!isHandToolEnabled && sizeEditMode === "normal"}
+								>
+									<MousePointer2 className="h-4 w-4" />
+								</button>
+								<button
+									type="button"
+									title="Hand"
+									onClick={() => {
+										setIsHandToolEnabled(true);
+										setSizeEditMode("normal");
+									}}
+									className={`flex h-8 w-8 items-center justify-center rounded-sm border transition ${
+										isHandToolEnabled
+											? "border-[#FF6B35]/70 bg-[#FF6B35]/15 text-[#FF6B35]"
+											: "border-white/10 bg-white/5 text-zinc-300 hover:border-[#FF6B35]/40 hover:text-[#FF6B35]"
+									}`}
+									aria-pressed={isHandToolEnabled}
+								>
+									<Hand className="h-4 w-4" />
+								</button>
+
+								<div className="mx-1 h-5 w-px bg-white/12" />
+
+								<button
+									type="button"
+									title="Transform"
+									disabled={!sizeTransformEditingAreaId}
+									onClick={() => {
+										if (!sizeTransformEditingAreaId) return;
+										setIsHandToolEnabled(false);
+										setSizeEditMode("perspective");
+										setPerspectiveCornersById((prev) => ({
+											...prev,
+											[sizeTransformEditingAreaId]: prev[sizeTransformEditingAreaId] || { ...DEFAULT_CORNERS },
+										}));
+									}}
+									className={`flex h-8 w-8 items-center justify-center rounded-sm border transition disabled:cursor-not-allowed disabled:border-white/10 disabled:text-zinc-600 ${
+										sizeTransformEditingAreaId && (sizeEditMode === "perspective" || sizeEditMode === "wrap") && !isHandToolEnabled
+											? "border-cyan-400/70 bg-cyan-400/15 text-cyan-300"
+											: "border-white/10 bg-white/5 text-zinc-300 hover:border-cyan-400/50 hover:text-cyan-300"
+									}`}
+								>
+									<svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+										<path d="M6.5 6.2L17.5 6.2L17.5 17.8L6.5 17.8Z" />
+										<circle cx="6.5" cy="6.2" r="2" fill="currentColor" stroke="none" />
+										<circle cx="17.5" cy="6.2" r="2" fill="currentColor" stroke="none" />
+										<circle cx="17.5" cy="17.8" r="2" fill="currentColor" stroke="none" />
+										<circle cx="6.5" cy="17.8" r="2" fill="currentColor" stroke="none" />
+									</svg>
+								</button>
+								<button
+									type="button"
+									title="Wrap"
+									disabled={!sizeTransformEditingAreaId || isHandToolEnabled || (sizeEditMode !== "perspective" && sizeEditMode !== "wrap")}
+									onClick={() => {
+										if (!sizeTransformEditingAreaId) return;
+										setSizeEditMode("wrap");
+										setWrapHandlesById((prev) => ({
+											...prev,
+											[sizeTransformEditingAreaId]: prev[sizeTransformEditingAreaId] || createDefaultWrapHandles(),
+										}));
+									}}
+									className={`flex h-8 w-8 items-center justify-center rounded-sm border transition disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/5 disabled:text-zinc-600 ${
+										sizeTransformEditingAreaId && sizeEditMode === "wrap" && !isHandToolEnabled
+											? "border-cyan-400/70 bg-cyan-400/15 text-cyan-300 hover:border-cyan-400 hover:text-cyan-200"
+											: "border-white/10 bg-white/5 text-zinc-300 hover:border-cyan-400/50 hover:text-cyan-300"
+									}`}
+								>
+									<Grid3X3 className="h-4 w-4" />
+								</button>
+								<button
+									type="button"
+									title="Remove selected size layer"
+									disabled={!sizeTransformEditingAreaId}
+									onClick={() => {
+										if (!sizeTransformEditingAreaId) return;
+										const areaId = sizeTransformEditingAreaId;
+										setSizeImageByAreaId((prev) => {
+											const next = { ...prev };
+											delete next[areaId];
+											return next;
+										});
+										setSizeImageNaturalSizeById((prev) => {
+											const next = { ...prev };
+											delete next[areaId];
+											return next;
+										});
+										setSizeTransformByAreaId((prev) => {
+											const next = { ...prev };
+											delete next[areaId];
+											return next;
+										});
+										setPerspectiveCornersById((prev) => {
+											const next = { ...prev };
+											delete next[areaId];
+											return next;
+										});
+										setWrapHandlesById((prev) => {
+											const next = { ...prev };
+											delete next[areaId];
+											return next;
+										});
+										setSizeTransformEditingAreaId(null);
+									}}
+									className="flex h-8 w-8 items-center justify-center rounded-sm border border-white/10 bg-white/5 text-zinc-300 transition hover:border-red-500/50 hover:text-red-300 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-zinc-600"
+								>
+									<Trash2 className="h-4 w-4" />
+								</button>
+							</div>
 						</div>
-						<div ref={artboardStageRef} className="relative mx-auto w-full max-w-[680px] aspect-square overflow-hidden">
-							<div
-								ref={draggableArtboardRef}
-								onWheel={handleArtboardWheel}
-								onMouseDown={() => {
-									if (!isHandToolEnabled) setSizeTransformEditingAreaId(null);
+						<div ref={artboardStageRef} className="relative min-h-[560px] flex-1 overflow-hidden">
+							<Stage
+								width={artboardStageSize.w}
+								height={artboardStageSize.h}
+								onWheel={(e) => {
+									e.evt.preventDefault();
+									const zoomStep = 0.1;
+									const minZoom = 0.5;
+									const maxZoom = 3;
+									setArtboardZoom((prev) => (
+										e.evt.deltaY < 0
+											? Math.min(prev + zoomStep, maxZoom)
+											: Math.max(prev - zoomStep, minZoom)
+									));
 								}}
-								onPointerDown={handleArtboardPointerDown}
-								onPointerMove={handleArtboardPointerMove}
-								onPointerUp={handleArtboardPointerUp}
-								onPointerCancel={handleArtboardPointerUp}
-								className="relative w-full max-w-[610px] bg-white shadow-[0_18px_40px_rgba(0,0,0,0.18)]"
+								onMouseDown={(e) => {
+									if (e.target === e.target.getStage() && !isHandToolEnabled) {
+										setSizeTransformEditingAreaId(null);
+									}
+								}}
 								style={{
 									touchAction: "none",
-									position: "absolute",
-									left: artboardOffset.x,
-									top: artboardOffset.y,
-									transform: `scale(${artboardZoom})`,
-									transformOrigin: "center center",
-									transition: "transform 0.1s ease-out",
-									height: artboardLayerImages.length > 0 ? "auto" : "671px",
-									isolation: "isolate",
-									overflow: "hidden",
 									cursor: isHandToolEnabled ? (isDraggingArtboard ? "grabbing" : "grab") : "default",
 								}}
 							>
-								{(() => {
-									const visibleImages = artboardLayerImages.filter((item) => visibleLayers.has(item.id));
-									const firstVisible = visibleImages[0];
-
-									return (
-										<>
-											{firstVisible && (
-												<img
-													key={`${firstVisible.id}-sizer`}
-													src={firstVisible.src}
-													alt=""
-													aria-hidden="true"
-													className="w-full"
-													style={{
-														display: "block",
-														visibility: "hidden",
-														pointerEvents: "none",
-														userSelect: "none",
-														height: "auto",
-													}}
-												/>
-											)}
-											{visibleImages.map((image, index) => {
-										const zIndex = visibleImages.length - index;
-
-										return (
-											<img
-												key={image.id}
-												src={image.src}
-												alt="Artboard layer"
-												className="w-full"
-												style={{
-													display: "block",
-													mixBlendMode: layerBlendModes[image.id] || "normal",
-													position: "absolute",
-													zIndex,
-													top: 0,
-													left: 0,
-													height: "100%",
-													objectFit: "cover",
-													pointerEvents: "none",
-													userSelect: "none",
-												}}
-											/>
-										);
-											})}
-										</>
-									);
-								})()}
-								{/* Size images for all design areas */}
-								{designAreaAssets.map((area) => {
-									const sizeImg = sizeImageByAreaId[area.id];
-									if (!sizeImg) return null;
-									const t = getSizeTransform(area.id);
-									const artboardEl = draggableArtboardRef.current;
-									const artW = artboardEl?.offsetWidth || 610;
-									const artH = artboardEl?.offsetHeight || artW;
-									const nat = sizeImageNaturalSizeById[area.id];
-									let baseW = artW;
-									let baseH = artH;
-									if (nat) {
-										const fitScale = Math.min(artW / nat.w, artH / nat.h);
-										baseW = nat.w * fitScale;
-										baseH = nat.h * fitScale;
-									}
-									const boxW = baseW * t.scale;
-									const boxH = baseH * t.scale;
-									const isEditing = sizeTransformEditingAreaId === area.id;
-									const isPerspectiveMode = isEditing && sizeEditMode === "perspective";
-									const corners = perspectiveCornersById[area.id] || DEFAULT_CORNERS;
-									const hasPerspective = !isDefaultCorners(corners);
-									const rad = (t.rotation * Math.PI) / 180;
-									const cosA = Math.cos(rad);
-									const sinA = Math.sin(rad);
-
-									return (
-										<div key={`size-preview-${area.id}`} style={{ display: 'contents' }}>
-											{/* Bottom layer preview clipped by top-layer mask */}
-											<div
-												style={{
-													position: "absolute",
-													inset: 0,
-													zIndex: isEditing ? 499 : 49,
-													pointerEvents: "none",
-													WebkitMaskImage: `url(${area.src})`,
-													WebkitMaskSize: "cover",
-													WebkitMaskRepeat: "no-repeat",
-													WebkitMaskPosition: "center",
-													maskImage: `url(${area.src})`,
-													maskSize: "cover",
-													maskRepeat: "no-repeat",
-													maskPosition: "center",
-												}}
-											>
-												<div
-													style={{
-														position: "absolute",
-														top: "50%",
-														left: "50%",
-														width: boxW,
-														height: boxH,
-														transform: `translate(-50%, -50%) translate(${t.x}px, ${t.y}px) rotate(${t.rotation}deg)`,
-														transformOrigin: "center center",
-													}}
-												>
-													<div
-														style={{
-															width: "100%",
-															height: "100%",
-															transformOrigin: "0 0",
-															transform: hasPerspective ? computeMatrix3dStyle(corners, boxW, boxH) : undefined,
-														}}
-													>
-														<img
-															src={sizeImg.src}
-															alt=""
-															style={{
-																width: "100%",
-																height: "100%",
-																objectFit: "fill",
-																display: "block",
-																opacity: isEditing ? 0.7 : 0.4,
-															}}
-														/>
-													</div>
-												</div>
-											</div>
-
-											{/* Image container: positioned + rotated */}
-											<div
-												style={{
-													position: "absolute",
-													top: "50%",
-													left: "50%",
-													width: boxW,
-													height: boxH,
-													zIndex: isEditing ? 500 : 50,
-													transform: `translate(-50%, -50%) translate(${t.x}px, ${t.y}px) rotate(${t.rotation}deg)`,
-													transformOrigin: "center center",
-													pointerEvents: "none",
-												}}
-											>
-												<div
-													style={{
-														width: "100%",
-														height: "100%",
-													}}
-												>
-													<img
-														src={sizeImg.src}
-														alt=""
-														onMouseDown={(e) => {
-															e.stopPropagation();
-															if (isEditing && sizeEditMode === "normal") {
-																handleSizeDragMouseDown(e, area.id);
-															} else if (!isEditing) {
-																setSizeTransformEditingAreaId(area.id);
-																setSizeEditMode("normal");
-															}
-														}}
-														style={{
-															width: "100%",
-															height: "100%",
-															objectFit: "fill",
-															display: "block",
-															pointerEvents: "auto",
-															cursor: isEditing && sizeEditMode === "normal" ? "move" : "pointer",
-															opacity: 0,
-														}}
+								<Layer>
+									<Group
+										x={artboardOffset.x}
+										y={artboardOffset.y}
+										scaleX={artboardZoom}
+										scaleY={artboardZoom}
+										draggable={isHandToolEnabled}
+										dragBoundFunc={(pos) => clampKonvaArtboardOffset(pos.x, pos.y)}
+										onDragStart={(e) => {
+											if (!isHandToolEnabled) {
+												e.cancelBubble = true;
+												return;
+											}
+											setIsDraggingArtboard(true);
+										}}
+										onDragMove={(e) => {
+											if (!isHandToolEnabled) return;
+											setArtboardOffset(clampKonvaArtboardOffset(e.target.x(), e.target.y()));
+										}}
+										onDragEnd={(e) => {
+											if (!isHandToolEnabled) return;
+											setIsDraggingArtboard(false);
+											setArtboardOffset(clampKonvaArtboardOffset(e.target.x(), e.target.y()));
+										}}
+									>
+										<Rect
+											x={0}
+											y={0}
+											width={artboardRenderWidth}
+											height={artboardRenderHeight}
+											fill="#ffffff"
+											shadowColor="rgba(0,0,0,0.28)"
+											shadowBlur={40}
+											shadowOffsetY={18}
+											listening={isHandToolEnabled}
+										/>
+										<Group clipX={0} clipY={0} clipWidth={artboardRenderWidth} clipHeight={artboardRenderHeight}>
+											{visibleArtboardLayerImages.length === 0 && (
+												<>
+													<Rect
+														x={0}
+														y={0}
+														width={artboardRenderWidth}
+														height={artboardRenderHeight}
+														fill="#ffffff"
+														listening={false}
 													/>
-												</div>
+													<KonvaText
+														x={0}
+														y={artboardRenderHeight / 2 - 16}
+														width={artboardRenderWidth}
+														text="Upload artboard layers"
+														align="center"
+														fontSize={18}
+														fontStyle="600"
+														fill="#71717a"
+														listening={false}
+													/>
+												</>
+											)}
+											{[...visibleArtboardLayerImages].reverse().map((image) => (
+												<KonvaLoadedImage
+													key={image.id}
+													src={image.src}
+													x={0}
+													y={0}
+													width={artboardRenderWidth}
+													height={artboardRenderHeight}
+													globalCompositeOperation={(layerBlendModes[image.id] === "normal" ? "source-over" : layerBlendModes[image.id] || "source-over") as GlobalCompositeOperation}
+												/>
+											))}
+											{designAreaAssets.map((area) => {
+												const sizeImg = sizeImageByAreaId[area.id];
+												if (!sizeImg) return null;
+												const t = getSizeTransform(area.id);
+												const nat = sizeImageNaturalSizeById[area.id];
+												let baseW = artboardRenderWidth;
+												let baseH = artboardRenderHeight;
+												if (nat) {
+													const fitScale = Math.min(artboardRenderWidth / nat.w, artboardRenderHeight / nat.h);
+													baseW = nat.w * fitScale;
+													baseH = nat.h * fitScale;
+												}
+												const boxW = baseW * t.scale;
+												const boxH = baseH * t.scale;
+												const isEditing = sizeTransformEditingAreaId === area.id;
+												const corners = perspectiveCornersById[area.id] || DEFAULT_CORNERS;
+												const wrapHandles = wrapHandlesById[area.id] || createDefaultWrapHandles();
+												const rad = (t.rotation * Math.PI) / 180;
+												const cosA = Math.cos(rad);
+												const sinA = Math.sin(rad);
+												const groupX = artboardRenderWidth / 2 + t.x;
+												const groupY = artboardRenderHeight / 2 + t.y;
+												const toLocalPoint = (point: { x: number; y: number }) => ({
+													x: point.x * boxW - boxW / 2,
+													y: point.y * boxH - boxH / 2,
+												});
+												const updatePerspectiveCorner = (stage: any, cornerKey: keyof PerspectiveCorners) => {
+													const point = getKonvaArtboardPointer(stage);
+													if (!point) return;
+													const relX = point.x - groupX;
+													const relY = point.y - groupY;
+													const unrotX = relX * cosA + relY * sinA;
+													const unrotY = -relX * sinA + relY * cosA;
+													const nx = (unrotX + boxW / 2) / boxW;
+													const ny = (unrotY + boxH / 2) / boxH;
+													setPerspectiveCornersById((prev) => ({
+														...prev,
+														[area.id]: {
+															...(prev[area.id] || DEFAULT_CORNERS),
+															[cornerKey]: {
+																x: Math.round(Math.max(-1, Math.min(2, nx)) * 1000) / 1000,
+																y: Math.round(Math.max(-1, Math.min(2, ny)) * 1000) / 1000,
+															},
+														},
+													}));
+												};
+												const updateWrapHandle = (stage: any, edgeKey: WrapEdgeKey, handleKey: WrapHandleKey) => {
+													const point = getKonvaArtboardPointer(stage);
+													if (!point) return;
+													const relX = point.x - groupX;
+													const relY = point.y - groupY;
+													const unrotX = relX * cosA + relY * sinA;
+													const unrotY = -relX * sinA + relY * cosA;
+													const nx = (unrotX + boxW / 2) / boxW;
+													const ny = (unrotY + boxH / 2) / boxH;
+													setWrapHandlesById((prev) => {
+														const current = prev[area.id] || createDefaultWrapHandles();
+														return {
+															...prev,
+															[area.id]: {
+																...current,
+																[edgeKey]: {
+																	...current[edgeKey],
+																	[handleKey]: {
+																		x: Math.round(Math.max(-1, Math.min(2, nx)) * 1000) / 1000,
+																		y: Math.round(Math.max(-1, Math.min(2, ny)) * 1000) / 1000,
+																	},
+																},
+															},
+														};
+													});
+												};
+												const wrapEdges: Array<{ key: WrapEdgeKey; from: keyof PerspectiveCorners; to: keyof PerspectiveCorners }> = [
+													{ key: "top", from: "topLeft", to: "topRight" },
+													{ key: "right", from: "topRight", to: "bottomRight" },
+													{ key: "bottom", from: "bottomRight", to: "bottomLeft" },
+													{ key: "left", from: "bottomLeft", to: "topLeft" },
+												];
+												const cubicPoint = (
+													p0: { x: number; y: number },
+													p1: { x: number; y: number },
+													p2: { x: number; y: number },
+													p3: { x: number; y: number },
+													amount: number,
+												) => {
+													const inv = 1 - amount;
+													const a = inv * inv * inv;
+													const b = 3 * inv * inv * amount;
+													const c = 3 * inv * amount * amount;
+													const d = amount * amount * amount;
+													return {
+														x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
+														y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
+													};
+												};
+												const getEdgePoint = (edgeKey: WrapEdgeKey, amount: number) => {
+													const edge = wrapEdges.find((item) => item.key === edgeKey)!;
+													return cubicPoint(
+														toLocalPoint(corners[edge.from]),
+														toLocalPoint(wrapHandles[edge.key].start),
+														toLocalPoint(wrapHandles[edge.key].end),
+														toLocalPoint(corners[edge.to]),
+														amount,
+													);
+												};
+												const getWarpMeshPoint = (u: number, v: number) => {
+													const top = getEdgePoint("top", u);
+													const bottom = getEdgePoint("bottom", 1 - u);
+													const left = getEdgePoint("left", 1 - v);
+													const right = getEdgePoint("right", v);
+													const topLeft = toLocalPoint(corners.topLeft);
+													const topRight = toLocalPoint(corners.topRight);
+													const bottomLeft = toLocalPoint(corners.bottomLeft);
+													const bottomRight = toLocalPoint(corners.bottomRight);
+													const bilinear = {
+														x:
+															(1 - u) * (1 - v) * topLeft.x +
+															u * (1 - v) * topRight.x +
+															(1 - u) * v * bottomLeft.x +
+															u * v * bottomRight.x,
+														y:
+															(1 - u) * (1 - v) * topLeft.y +
+															u * (1 - v) * topRight.y +
+															(1 - u) * v * bottomLeft.y +
+															u * v * bottomRight.y,
+													};
+													return {
+														x: (1 - v) * top.x + v * bottom.x + (1 - u) * left.x + u * right.x - bilinear.x,
+														y: (1 - v) * top.y + v * bottom.y + (1 - u) * left.y + u * right.y - bilinear.y,
+													};
+												};
+												const getMeshLinePoints = (fraction: number, axis: "vertical" | "horizontal") => {
+													const points: number[] = [];
+													const steps = 16;
+													for (let step = 0; step <= steps; step += 1) {
+														const amount = step / steps;
+														const point = axis === "vertical"
+															? getWarpMeshPoint(fraction, amount)
+															: getWarpMeshPoint(amount, fraction);
+														points.push(point.x, point.y);
+													}
+													return points;
+												};
+												const gridFractions = [1 / 3, 2 / 3];
 
-												{/* Bounding box when editing */}
-												{isEditing && (
-													<>
-														{/* Dashed border + drag area (normal mode only) */}
-														{sizeEditMode === "normal" && (
-															<div
-																onMouseDown={(e) => handleSizeDragMouseDown(e, area.id)}
-																style={{
-																	position: "absolute",
-																	inset: 0,
-																	border: "1.5px dashed rgba(255,107,53,0.9)",
-																	boxShadow: "0 0 0 1px rgba(255,107,53,0.18)",
-																	cursor: "move",
-																	pointerEvents: "auto",
-																}}
+												return (
+													<Group key={`size-preview-${area.id}`}>
+														<MaskedSizePreview
+															sizeSrc={sizeImg.src}
+															maskSrc={area.src}
+															artW={artboardRenderWidth}
+															artH={artboardRenderHeight}
+															x={t.x}
+															y={t.y}
+															boxW={boxW}
+															boxH={boxH}
+															rotation={t.rotation}
+															corners={corners}
+															wrapHandles={wrapHandlesById[area.id] ?? null}
+															opacity={isEditing ? 0.7 : 0.4}
+														/>
+														<Group
+															ref={(node) => {
+																if (node) sizeTransformNodeRefs.current[area.id] = node;
+																else delete sizeTransformNodeRefs.current[area.id];
+															}}
+															x={groupX}
+															y={groupY}
+															rotation={t.rotation}
+															draggable={isEditing && sizeEditMode === "normal" && !isHandToolEnabled}
+															onMouseDown={(e) => {
+																e.cancelBubble = true;
+																setIsHandToolEnabled(false);
+																setSizeTransformEditingAreaId(area.id);
+																if (sizeEditMode !== "perspective" && sizeEditMode !== "wrap") setSizeEditMode("normal");
+															}}
+															onClick={(e) => {
+																e.cancelBubble = true;
+																setIsHandToolEnabled(false);
+																setSizeTransformEditingAreaId(area.id);
+																if (sizeEditMode !== "perspective" && sizeEditMode !== "wrap") setSizeEditMode("normal");
+															}}
+															onTap={(e) => {
+																e.cancelBubble = true;
+																setIsHandToolEnabled(false);
+																setSizeTransformEditingAreaId(area.id);
+																if (sizeEditMode !== "perspective" && sizeEditMode !== "wrap") setSizeEditMode("normal");
+															}}
+															onDragStart={(e) => {
+																e.cancelBubble = true;
+															}}
+															onDragMove={(e) => {
+																e.cancelBubble = true;
+																setSizeTransformByAreaId((prev) => ({
+																	...prev,
+																	[area.id]: {
+																		...(prev[area.id] ?? defaultSizeTransform),
+																		x: e.target.x() - artboardRenderWidth / 2,
+																		y: e.target.y() - artboardRenderHeight / 2,
+																	},
+																}));
+															}}
+															onDragEnd={(e) => {
+																e.cancelBubble = true;
+																setSizeTransformByAreaId((prev) => ({
+																	...prev,
+																	[area.id]: {
+																		...(prev[area.id] ?? defaultSizeTransform),
+																		x: e.target.x() - artboardRenderWidth / 2,
+																		y: e.target.y() - artboardRenderHeight / 2,
+																	},
+																}));
+															}}
+															onTransform={(e) => {
+																const node = e.target;
+																const scaleFactor = Math.max(node.scaleX(), node.scaleY());
+																node.scaleX(1);
+																node.scaleY(1);
+																setSizeTransformByAreaId((prev) => ({
+																	...prev,
+																	[area.id]: {
+																		...(prev[area.id] ?? defaultSizeTransform),
+																		x: node.x() - artboardRenderWidth / 2,
+																		y: node.y() - artboardRenderHeight / 2,
+																		scale: Math.max(0.05, Math.min(5, (prev[area.id] ?? defaultSizeTransform).scale * scaleFactor)),
+																		rotation: node.rotation(),
+																	},
+																}));
+															}}
+															onTransformEnd={(e) => {
+																const node = e.target;
+																const scaleFactor = Math.max(node.scaleX(), node.scaleY());
+																node.scaleX(1);
+																node.scaleY(1);
+																setSizeTransformByAreaId((prev) => ({
+																	...prev,
+																	[area.id]: {
+																		...(prev[area.id] ?? defaultSizeTransform),
+																		x: node.x() - artboardRenderWidth / 2,
+																		y: node.y() - artboardRenderHeight / 2,
+																		scale: Math.max(0.05, Math.min(5, (prev[area.id] ?? defaultSizeTransform).scale * scaleFactor)),
+																		rotation: node.rotation(),
+																	},
+																}));
+															}}
+														>
+															<Rect
+																x={-boxW / 2}
+																y={-boxH / 2}
+																width={boxW}
+																height={boxH}
+																fill="rgba(255,255,255,0.01)"
+																stroke={isEditing ? (sizeEditMode === "perspective" || sizeEditMode === "wrap" ? "rgba(56,189,248,0.95)" : "rgba(255,107,53,0.9)") : undefined}
+																strokeWidth={isEditing ? 1.5 / artboardZoom : 0}
+																dash={isEditing ? [6 / artboardZoom, 4 / artboardZoom] : undefined}
+																listening={!isHandToolEnabled}
 															/>
-														)}
-
-														{/* Normal mode: corner dots (decorative) */}
-														{sizeEditMode === "normal" && ([["top", "left"], ["top", "right"], ["bottom", "left"], ["bottom", "right"]] as const).map(([v, h]) => (
-															<div
-																key={`${v}-${h}`}
-																style={{
-																	position: "absolute",
-																	[v]: -4,
-																	[h]: -4,
-																	width: 8,
-																	height: 8,
-																	borderRadius: "50%",
-																	background: "#FF6B35",
-																	border: "1.5px solid #fff",
-																	pointerEvents: "none",
-																}}
-															/>
-														))}
-
-														{/* Perspective mode: blue border + draggable corner points */}
-														{sizeEditMode === "perspective" && (
-															<>
-																<div
-																	style={{
-																		position: "absolute",
-																		inset: 0,
-																		border: "1.5px dashed rgba(56,189,248,0.95)",
-																		boxShadow: "0 0 0 1px rgba(56,189,248,0.22)",
-																		pointerEvents: "none",
-																	}}
-																/>
-																{(["topLeft", "topRight", "bottomLeft", "bottomRight"] as const).map((cornerKey) => {
+															{false && isEditing && sizeEditMode === "normal" && (
+																<>
+																	{[
+																		[-boxW / 2, -boxH / 2],
+																		[boxW / 2, -boxH / 2],
+																		[-boxW / 2, boxH / 2],
+																		[boxW / 2, boxH / 2],
+																	].map(([cx, cy], index) => (
+																		<Circle
+																			key={`corner-${index}`}
+																			x={cx}
+																			y={cy}
+																			radius={4 / artboardZoom}
+																			fill="#FF6B35"
+																			stroke="#ffffff"
+																			strokeWidth={1.5 / artboardZoom}
+																			listening={false}
+																		/>
+																	))}
+																	<Line points={[0, -boxH / 2, 0, -boxH / 2 - 10 / artboardZoom]} stroke="rgba(255,107,53,0.6)" strokeWidth={1 / artboardZoom} listening={false} />
+																	<Rect
+																		x={boxW / 2 - 8 / artboardZoom}
+																		y={boxH / 2 - 8 / artboardZoom}
+																		width={16 / artboardZoom}
+																		height={16 / artboardZoom}
+																		fill="#FF6B35"
+																		stroke="#ffffff"
+																		strokeWidth={1.5 / artboardZoom}
+																		cornerRadius={2 / artboardZoom}
+																		draggable
+																		onDragStart={(e) => {
+																			const stage = e.target.getStage();
+																			const point = getKonvaArtboardPointer(stage);
+																			if (!point) return;
+																			sizeScaleStart.current = {
+																				distance: Math.max(Math.hypot(point.x - groupX, point.y - groupY), 1),
+																				scale: t.scale,
+																				areaId: area.id,
+																			};
+																		}}
+																		onDragMove={(e) => {
+																			const stage = e.target.getStage();
+																			const point = getKonvaArtboardPointer(stage);
+																			if (!point) return;
+																			const currentDistance = Math.max(Math.hypot(point.x - groupX, point.y - groupY), 1);
+																			const ratio = currentDistance / sizeScaleStart.current.distance;
+																			const nextScale = Math.max(0.05, Math.min(5, sizeScaleStart.current.scale * ratio));
+																			setSizeTransformByAreaId((prev) => ({
+																				...prev,
+																				[area.id]: { ...(prev[area.id] ?? defaultSizeTransform), scale: nextScale },
+																			}));
+																		}}
+																	/>
+																</>
+															)}
+															{isEditing && (sizeEditMode === "perspective" || sizeEditMode === "wrap") && (
+																(["topLeft", "topRight", "bottomLeft", "bottomRight"] as const).map((cornerKey) => {
 																	const cornerPos = corners[cornerKey];
 																	return (
-																		<div
+																		<Circle
 																			key={cornerKey}
-																			onMouseDown={(e) => {
-																				e.stopPropagation();
-																				e.preventDefault();
-																				const artboard = draggableArtboardRef.current;
-																				if (!artboard) return;
-
-																				const onMove = (ev: MouseEvent) => {
-																					const rect = artboard.getBoundingClientRect();
-																					const mouseArtX = ev.clientX - rect.left;
-																					const mouseArtY = ev.clientY - rect.top;
-																					const relX = mouseArtX - (artW / 2 + t.x);
-																					const relY = mouseArtY - (artH / 2 + t.y);
-																					const unrotX = relX * cosA + relY * sinA;
-																					const unrotY = -relX * sinA + relY * cosA;
-																					const nx = (unrotX + boxW / 2) / boxW;
-																					const ny = (unrotY + boxH / 2) / boxH;
-
-																					setPerspectiveCornersById((prev) => ({
-																						...prev,
-																						[area.id]: {
-																							...(prev[area.id] || DEFAULT_CORNERS),
-																							[cornerKey]: {
-																								x: Math.round(Math.max(-1, Math.min(2, nx)) * 1000) / 1000,
-																								y: Math.round(Math.max(-1, Math.min(2, ny)) * 1000) / 1000,
-																							},
-																						},
-																					}));
-																				};
-
-																				const onUp = () => {
-																					window.removeEventListener("mousemove", onMove);
-																					window.removeEventListener("mouseup", onUp);
-																				};
-																				window.addEventListener("mousemove", onMove);
-																				window.addEventListener("mouseup", onUp);
+																			x={cornerPos.x * boxW - boxW / 2}
+																			y={cornerPos.y * boxH - boxH / 2}
+																			radius={6 / artboardZoom}
+																			fill="#38bdf8"
+																			stroke="#ffffff"
+																			strokeWidth={2 / artboardZoom}
+																			draggable
+																			onDragStart={(e) => {
+																				e.cancelBubble = true;
 																			}}
-																			style={{
-																				position: "absolute",
-																				left: `${cornerPos.x * 100}%`,
-																				top: `${cornerPos.y * 100}%`,
-																				width: 12,
-																				height: 12,
-																				borderRadius: "50%",
-																				background: "#38bdf8",
-																				border: "2px solid #fff",
-																				transform: "translate(-50%, -50%)",
-																				cursor: "move",
-																				pointerEvents: "auto",
-																				zIndex: 2,
-																				boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+																			onDragMove={(e) => {
+																				e.cancelBubble = true;
+																				updatePerspectiveCorner(e.target.getStage(), cornerKey);
+																			}}
+																			onDragEnd={(e) => {
+																				e.cancelBubble = true;
 																			}}
 																		/>
 																	);
-																})}
-															</>
-														)}
-
-														{/* Toolbar: rotate + delete + normal + inert extra icon */}
-														<div
-															style={{
-																position: "absolute",
-																top: -34,
-																left: "50%",
-																transform: "translateX(-50%)",
-																display: "flex",
-																alignItems: "center",
-																gap: 4,
-																pointerEvents: "auto",
-															}}
-														>
-															{/* Rotate */}
-															<button
-																type="button"
-																aria-label="Rotate size image"
-																onMouseDown={(e) => {
-																	e.stopPropagation();
-																	handleSizeRotateMouseDown(e, area.id);
-																}}
-																style={{
-																	width: 22,
-																	height: 22,
-																	borderRadius: "50%",
-																	background: "#11131B",
-																	border: "1.5px solid #FF6B35",
-																	cursor: "grab",
-																	display: "flex",
-																	alignItems: "center",
-																	justifyContent: "center",
-																}}
-															>
-																<svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-																	<path d="M5 1.5A3.5 3.5 0 1 1 1.5 5" stroke="#FF6B35" strokeWidth="1.2" strokeLinecap="round" />
-																	<polygon points="1.5,2.5 1.5,5 4,3.8" fill="#FF6B35" />
-																</svg>
-															</button>
-															{/* Delete */}
-															<button
-																type="button"
-																aria-label="Delete size image"
-																onMouseDown={(e) => e.stopPropagation()}
-																onClick={() => {
-																	setSizeImageByAreaId((prev) => {
-																		const next = { ...prev };
-																		delete next[area.id];
-																		return next;
-																	});
-																	setSizeImageNaturalSizeById((prev) => {
-																		const next = { ...prev };
-																		delete next[area.id];
-																		return next;
-																	});
-																	setSizeTransformByAreaId((prev) => {
-																		const next = { ...prev };
-																		delete next[area.id];
-																		return next;
-																	});
-																	setPerspectiveCornersById((prev) => {
-																		const next = { ...prev };
-																		delete next[area.id];
-																		return next;
-																	});
-																	setSizeTransformEditingAreaId(null);
-																}}
-																style={{
-																	width: 22,
-																	height: 22,
-																	borderRadius: "50%",
-																	background: "#11131B",
-																	border: "1.5px solid #ef4444",
-																	cursor: "pointer",
-																	display: "flex",
-																	alignItems: "center",
-																	justifyContent: "center",
-																}}
-															>
-																<Trash2 size={10} strokeWidth={2.2} color="#ef4444" />
-															</button>
-															{/* Normal mode */}
-															<button
-																type="button"
-																aria-label="Normal transform mode"
-																onMouseDown={(e) => e.stopPropagation()}
-																onClick={() => setSizeEditMode("normal")}
-																style={{
-																	width: 22,
-																	height: 22,
-																	borderRadius: "50%",
-																	background: sizeEditMode === "normal" ? "#FF6B35" : "#11131B",
-																	border: `1.5px solid ${sizeEditMode === "normal" ? "#fff" : "#FF6B35"}`,
-																	cursor: "pointer",
-																	display: "flex",
-																	alignItems: "center",
-																	justifyContent: "center",
-																}}
-															>
-																<Move size={10} strokeWidth={2.2} color={sizeEditMode === "normal" ? "#fff" : "#FF6B35"} />
-															</button>
-															{/* Perspective mode */}
-															<button
-																type="button"
-																aria-label="Perspective warp mode"
-																onMouseDown={(e) => e.stopPropagation()}
-																onClick={() => {
-																	setSizeEditMode("perspective");
-																	if (!perspectiveCornersById[area.id]) {
-																		setPerspectiveCornersById((prev) => ({
-																			...prev,
-																			[area.id]: { ...DEFAULT_CORNERS },
-																		}));
-																	}
-																}}
-																style={{
-																	width: 22,
-																	height: 22,
-																	borderRadius: "50%",
-																	background: sizeEditMode === "perspective" ? "#38bdf8" : "#11131B",
-																	border: `1.5px solid ${sizeEditMode === "perspective" ? "#fff" : "#38bdf8"}`,
-																	cursor: "pointer",
-																	display: "flex",
-																	alignItems: "center",
-																	justifyContent: "center",
-																}}
-															>
-																<Grid3X3 size={10} strokeWidth={2.2} color={sizeEditMode === "perspective" ? "#fff" : "#38bdf8"} />
-															</button>
-														</div>
-
-														{/* Stem line to rotate */}
-														{sizeEditMode === "normal" && (
-															<div
-																style={{
-																	position: "absolute",
-																	top: -10,
-																	left: "50%",
-																	transform: "translateX(-50%)",
-																	width: 1,
-																	height: 10,
-																	background: "rgba(255,107,53,0.6)",
-																	pointerEvents: "none",
-																}}
-															/>
-														)}
-
-														{/* Scale handles (normal mode only) */}
-														{sizeEditMode === "normal" && (
-															<>
-																<button
-																	type="button"
-																	aria-label="Scale size image"
-																	onMouseDown={(e) => {
-																		e.stopPropagation();
-																		handleSizeScaleMouseDown(e, area.id);
-																	}}
-																	style={{
-																		position: "absolute",
-																		bottom: -8,
-																		right: -8,
-																		width: 16,
-																		height: 16,
-																		borderRadius: 2,
-																		background: "#FF6B35",
-																		border: "1.5px solid #fff",
-																		cursor: "nwse-resize",
-																		pointerEvents: "auto",
-																	}}
-																/>
-																<button
-																	type="button"
-																	aria-label="Scale size image"
-																	onMouseDown={(e) => {
-																		e.stopPropagation();
-																		handleSizeScaleMouseDown(e, area.id);
-																	}}
-																	style={{
-																		position: "absolute",
-																		bottom: -8,
-																		left: -8,
-																		width: 16,
-																		height: 16,
-																		borderRadius: 2,
-																		background: "#FF6B35",
-																		border: "1.5px solid #fff",
-																		cursor: "nesw-resize",
-																		pointerEvents: "auto",
-																	}}
-																/>
-															</>
-														)}
-													</>
-												)}
-											</div>
-										</div>
-									);
-								})}
-							</div>
+																})
+															)}
+															{isEditing && sizeEditMode === "wrap" && (
+																<>
+																	{gridFractions.map((fraction) => {
+																		return (
+																			<Group key={`wrap-grid-${fraction}`}>
+																				<Line
+																					points={getMeshLinePoints(fraction, "vertical")}
+																					stroke="rgba(56,189,248,0.28)"
+																					strokeWidth={1 / artboardZoom}
+																					listening={false}
+																				/>
+																				<Line
+																					points={getMeshLinePoints(fraction, "horizontal")}
+																					stroke="rgba(56,189,248,0.28)"
+																					strokeWidth={1 / artboardZoom}
+																					listening={false}
+																				/>
+																			</Group>
+																		);
+																	})}
+																	{wrapEdges.map((edge) => {
+																		const p0 = toLocalPoint(corners[edge.from]);
+																		const p3 = toLocalPoint(corners[edge.to]);
+																		const p1 = toLocalPoint(wrapHandles[edge.key].start);
+																		const p2 = toLocalPoint(wrapHandles[edge.key].end);
+																		return (
+																			<Group key={`wrap-edge-${edge.key}`}>
+																				<Line
+																					points={[p0.x, p0.y, p1.x, p1.y]}
+																					stroke="rgba(255,255,255,0.65)"
+																					strokeWidth={1 / artboardZoom}
+																					dash={[4 / artboardZoom, 4 / artboardZoom]}
+																					listening={false}
+																				/>
+																				<Line
+																					points={[p3.x, p3.y, p2.x, p2.y]}
+																					stroke="rgba(255,255,255,0.65)"
+																					strokeWidth={1 / artboardZoom}
+																					dash={[4 / artboardZoom, 4 / artboardZoom]}
+																					listening={false}
+																				/>
+																				<Line
+																					points={[p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y]}
+																					bezier
+																					stroke="rgba(56,189,248,0.98)"
+																					strokeWidth={2 / artboardZoom}
+																					listening={false}
+																				/>
+																				{(["start", "end"] as const).map((handleKey) => {
+																					const handlePoint = handleKey === "start" ? p1 : p2;
+																					return (
+																						<Circle
+																							key={`${edge.key}-${handleKey}`}
+																							x={handlePoint.x}
+																							y={handlePoint.y}
+																							radius={5 / artboardZoom}
+																							fill="#ffffff"
+																							stroke="#38bdf8"
+																							strokeWidth={2 / artboardZoom}
+																							draggable
+																							onMouseDown={(e) => {
+																								e.cancelBubble = true;
+																							}}
+																							onTouchStart={(e) => {
+																								e.cancelBubble = true;
+																							}}
+																							onDragStart={(e) => {
+																								e.cancelBubble = true;
+																							}}
+																							onDragMove={(e) => {
+																								e.cancelBubble = true;
+																								updateWrapHandle(e.target.getStage(), edge.key, handleKey);
+																							}}
+																							onDragEnd={(e) => {
+																								e.cancelBubble = true;
+																								updateWrapHandle(e.target.getStage(), edge.key, handleKey);
+																							}}
+																						/>
+																					);
+																				})}
+																			</Group>
+																		);
+																	})}
+																</>
+															)}
+															{false && isEditing && (
+																<Group x={0} y={-boxH / 2 - 34 / artboardZoom} scaleX={1 / artboardZoom} scaleY={1 / artboardZoom}>
+																	<Circle
+																		x={-39}
+																		y={0}
+																		radius={11}
+																		fill="#11131B"
+																		stroke="#FF6B35"
+																		strokeWidth={1.5}
+																		draggable
+																		onDragStart={(e) => {
+																			const stage = e.target.getStage();
+																			const point = getKonvaArtboardPointer(stage);
+																			if (!point) return;
+																			sizeRotateStart.current = {
+																				angle: (Math.atan2(point.y - groupY, point.x - groupX) * 180) / Math.PI,
+																				rotation: t.rotation,
+																				areaId: area.id,
+																			};
+																		}}
+																		onDragMove={(e) => {
+																			const stage = e.target.getStage();
+																			const point = getKonvaArtboardPointer(stage);
+																			if (!point) return;
+																			const currentAngle = (Math.atan2(point.y - groupY, point.x - groupX) * 180) / Math.PI;
+																			const delta = currentAngle - sizeRotateStart.current.angle;
+																			let nextRot = sizeRotateStart.current.rotation + delta;
+																			for (const snap of [0, 90, 180, 270, -90, -180, -270, 360]) {
+																				if (Math.abs(nextRot - snap) < 3) {
+																					nextRot = snap;
+																					break;
+																				}
+																			}
+																			setSizeTransformByAreaId((prev) => ({
+																				...prev,
+																				[area.id]: { ...(prev[area.id] ?? defaultSizeTransform), rotation: nextRot },
+																			}));
+																		}}
+																	/>
+																	<KonvaText x={-44} y={-6} width={10} height={12} text="↻" fontSize={11} fill="#FF6B35" listening={false} />
+																	<Circle
+																		x={-13}
+																		y={0}
+																		radius={11}
+																		fill="#11131B"
+																		stroke="#ef4444"
+																		strokeWidth={1.5}
+																		onClick={() => {
+																			setSizeImageByAreaId((prev) => {
+																				const next = { ...prev };
+																				delete next[area.id];
+																				return next;
+																			});
+																			setSizeImageNaturalSizeById((prev) => {
+																				const next = { ...prev };
+																				delete next[area.id];
+																				return next;
+																			});
+																			setSizeTransformByAreaId((prev) => {
+																				const next = { ...prev };
+																				delete next[area.id];
+																				return next;
+																			});
+																			setPerspectiveCornersById((prev) => {
+																				const next = { ...prev };
+																				delete next[area.id];
+																				return next;
+																			});
+																			setSizeTransformEditingAreaId(null);
+																		}}
+																	/>
+																	<KonvaText x={-18} y={-6} width={10} height={12} text="×" fontSize={13} fill="#ef4444" listening={false} />
+																	<Circle
+																		x={13}
+																		y={0}
+																		radius={11}
+																		fill={sizeEditMode === "normal" ? "#FF6B35" : "#11131B"}
+																		stroke={sizeEditMode === "normal" ? "#ffffff" : "#FF6B35"}
+																		strokeWidth={1.5}
+																		onClick={() => setSizeEditMode("normal")}
+																	/>
+																	<KonvaText x={8} y={-5} width={10} height={10} text="↔" fontSize={10} fill={sizeEditMode === "normal" ? "#ffffff" : "#FF6B35"} listening={false} />
+																	<Circle
+																		x={39}
+																		y={0}
+																		radius={11}
+																		fill={sizeEditMode === "perspective" ? "#38bdf8" : "#11131B"}
+																		stroke={sizeEditMode === "perspective" ? "#ffffff" : "#38bdf8"}
+																		strokeWidth={1.5}
+																		onClick={() => {
+																			setSizeEditMode("perspective");
+																			if (!perspectiveCornersById[area.id]) {
+																				setPerspectiveCornersById((prev) => ({
+																					...prev,
+																					[area.id]: { ...DEFAULT_CORNERS },
+																				}));
+																			}
+																		}}
+																	/>
+																	<KonvaText x={34} y={-5} width={10} height={10} text="#" fontSize={10} fill={sizeEditMode === "perspective" ? "#ffffff" : "#38bdf8"} listening={false} />
+																</Group>
+															)}
+														</Group>
+													</Group>
+												);
+											})}
+											<Transformer
+												ref={sizeTransformerRef}
+												rotateEnabled
+												enabledAnchors={["top-left", "top-right", "bottom-left", "bottom-right"]}
+												anchorSize={10 / artboardZoom}
+												anchorCornerRadius={2 / artboardZoom}
+												borderStroke="#FF6B35"
+												borderStrokeWidth={1.5 / artboardZoom}
+												anchorStroke="#ffffff"
+												anchorStrokeWidth={1.5 / artboardZoom}
+												anchorFill="#FF6B35"
+												rotationSnaps={[0, 45, 90, 135, 180, 225, 270, 315]}
+												rotationSnapTolerance={5}
+												keepRatio
+												boundBoxFunc={(oldBox, newBox) => {
+													if (newBox.width < 24 || newBox.height < 24) return oldBox;
+													return newBox;
+												}}
+											/>
+										</Group>
+									</Group>
+								</Layer>
+							</Stage>
 						</div>
 					</div>
 				</div>

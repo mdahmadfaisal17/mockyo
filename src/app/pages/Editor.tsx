@@ -1,10 +1,122 @@
 import { AlignCenter, AlignLeft, AlignRight, ChevronDown, Hand, ImagePlus, MousePointer2, Palette, RotateCcw, Scaling, Search, Trash2, Type, Upload } from "lucide-react";
+import Fuse from "fuse.js";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { markGuestDownloadUsed, requireSigninForExtraDownload } from "../lib/guestDownloadAccess";
-import { readAuthUser } from "../imports/authStore";
+import { openGuestAccessModal } from "../imports/guestAccessModalStore";
 import { useNavigate, useParams } from "react-router";
-import { type PerspectiveCorners, DEFAULT_CORNERS, isDefaultCorners, computeMatrix3dStyle, drawCanvasWarp } from "../lib/perspectiveWarp";
+import { type PerspectiveCorners, type WrapBezierHandles, DEFAULT_CORNERS, isDefaultCorners, drawCanvasBezierMeshWarp, drawCanvasWarp } from "../lib/perspectiveWarp";
 import { readEditorWorkspace, removeEditorWorkspace, writeEditorWorkspace } from "../lib/editorWorkspaceStorage";
+
+type WarpedDesignPreviewProps = {
+  src: string;
+  alt: string;
+  artW: number;
+  artH: number;
+  boxW: number;
+  boxH: number;
+  localX: number;
+  localY: number;
+  width: number;
+  height: number;
+  scale: number;
+  rotation: number;
+  corners: PerspectiveCorners;
+  wrapHandles?: WrapBezierHandles | null;
+  wrapperStrength: number;
+};
+
+function WarpedDesignPreview({
+  src,
+  alt,
+  boxW,
+  boxH,
+  localX,
+  localY,
+  width,
+  height,
+  scale,
+  rotation,
+  corners,
+  wrapHandles,
+  wrapperStrength,
+}: WarpedDesignPreviewProps) {
+  const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    let isActive = true;
+    const img = new window.Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const layerCanvas = document.createElement("canvas");
+      layerCanvas.width = Math.max(1, Math.round(boxW));
+      layerCanvas.height = Math.max(1, Math.round(boxH));
+      const layerCtx = layerCanvas.getContext("2d");
+      if (!layerCtx) return;
+
+      layerCtx.save();
+      layerCtx.translate(layerCanvas.width / 2 + localX, layerCanvas.height / 2 + localY);
+      layerCtx.rotate((rotation * Math.PI) / 180);
+      layerCtx.scale(scale, scale);
+      layerCtx.drawImage(img, -width / 2, -height / 2, width, height);
+      if (wrapperStrength > 0) {
+        layerCtx.globalAlpha = wrapperStrength;
+        layerCtx.globalCompositeOperation = "multiply";
+        layerCtx.drawImage(img, -width / 2, -height / 2, width, height);
+        layerCtx.globalCompositeOperation = "source-over";
+        layerCtx.globalAlpha = 1;
+      }
+      layerCtx.restore();
+
+      let outputCanvas = layerCanvas;
+      if (wrapHandles) {
+        const warped = document.createElement("canvas");
+        warped.width = layerCanvas.width;
+        warped.height = layerCanvas.height;
+        const warpedCtx = warped.getContext("2d");
+        if (warpedCtx) {
+          drawCanvasBezierMeshWarp(warpedCtx, layerCanvas, corners, wrapHandles, warped.width, warped.height);
+          outputCanvas = warped;
+        }
+      } else if (!isDefaultCorners(corners)) {
+        const warped = document.createElement("canvas");
+        warped.width = layerCanvas.width;
+        warped.height = layerCanvas.height;
+        const warpedCtx = warped.getContext("2d");
+        if (warpedCtx) {
+          drawCanvasWarp(warpedCtx, layerCanvas, corners, warped.width, warped.height);
+          outputCanvas = warped;
+        }
+      }
+
+      if (isActive) setCanvas(outputCanvas);
+    };
+    img.onerror = () => {
+      if (isActive) setCanvas(null);
+    };
+    img.src = src;
+
+    return () => {
+      isActive = false;
+    };
+  }, [src, boxW, boxH, localX, localY, width, height, scale, rotation, corners, wrapHandles, wrapperStrength]);
+
+  if (!canvas) return null;
+
+  return (
+    <img
+      src={canvas.toDataURL("image/png")}
+      alt={alt}
+      style={{
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        objectFit: "fill",
+        pointerEvents: "none",
+        userSelect: "none",
+      }}
+    />
+  );
+}
 
 export default function Editor() {
   const { id } = useParams();
@@ -27,6 +139,7 @@ export default function Editor() {
     sizeImageUrl?: string;
     sizeTransform?: DesignTransform;
     perspectiveCorners?: PerspectiveCorners;
+    wrapHandles?: WrapBezierHandles;
   };
   type ColorAreaItem = { id: string; url: string; label: string };
   type UploadedDesignItem = { id: string; src: string };
@@ -46,6 +159,8 @@ export default function Editor() {
   const [uploadedDesignByArea, setUploadedDesignByArea] = useState<Record<string, UploadedDesignItem[]>>({});
   const [designTransformById, setDesignTransformById] = useState<Record<string, DesignTransform>>({});
   const [designNaturalSizes, setDesignNaturalSizes] = useState<Record<string, { w: number; h: number }>>({});
+  const [designOpaqueBoundsById, setDesignOpaqueBoundsById] = useState<Record<string, { x: number; y: number; w: number; h: number; sourceW: number; sourceH: number }>>({});
+  const [selectedRenderedDesignBox, setSelectedRenderedDesignBox] = useState<{ x: number; y: number; w: number; h: number; rotation: number } | null>(null);
   const [bottomLayerNaturalByAreaId, setBottomLayerNaturalByAreaId] = useState<Record<string, { w: number; h: number }>>({});
   const [colorAreaImages, setColorAreaImages] = useState<ColorAreaItem[]>([]);
   const [selectedColorAreaUrl, setSelectedColorAreaUrl] = useState<string | null>(null);
@@ -126,6 +241,7 @@ export default function Editor() {
     "4000x4000 px" | "1000x1000 px" | "500x500 px"
   >("1000x1000 px");
   const [isDownloading, setIsDownloading] = useState(false);
+  const [exportFeedbackMessage, setExportFeedbackMessage] = useState<string | null>(null);
   const [isDeleteAllModalOpen, setIsDeleteAllModalOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
   const saturationRef = useRef<HTMLDivElement | null>(null);
@@ -144,6 +260,12 @@ export default function Editor() {
   const designScaleStart = useRef({ distance: 0, scale: 1, areaUrl: "", designId: "" });
   const isRotatingDesign = useRef(false);
   const designRotateStart = useRef({ angle: 0, rotation: 0, areaUrl: "", designId: "" });
+  const liveControlBoxStart = useRef<{ box: { x: number; y: number; w: number; h: number; rotation: number } | null; center: { x: number; y: number }; scale: number; rotation: number }>({
+    box: null,
+    center: { x: 0, y: 0 },
+    scale: 1,
+    rotation: 0,
+  });
   const activePinchPointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const isPinching = useRef(false);
   const pinchStartDistance = useRef(0);
@@ -154,6 +276,22 @@ export default function Editor() {
   const normalizedDesignIdsRef = useRef<Set<string>>(new Set());
 
   const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+  const normalizeSearchText = (value: string) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/t[\s-]?shirt/g, "tshirt")
+      .replace(/sleeve[\s-]?less/g, "sleeveless")
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const buildSearchText = (item: { title?: string; mainCategory?: string; category?: string }) =>
+    normalizeSearchText(
+      [item.title, item.mainCategory, item.category]
+        .filter(Boolean)
+        .join(" "),
+    );
+
   const DESIGN_ROTATION_SNAP_STEP = 45;
   const OVERLAY_ROTATION_SNAP_STEP = 15;
   const ROTATION_SNAP_THRESHOLD = 3;
@@ -280,6 +418,8 @@ export default function Editor() {
     setUploadedDesignByArea({});
     setDesignTransformById({});
     setDesignNaturalSizes({});
+    setDesignOpaqueBoundsById({});
+    setSelectedRenderedDesignBox(null);
     setBottomLayerNaturalByAreaId({});
     setSelectedDesignId(null);
     setAppliedColorByArea({});
@@ -310,6 +450,26 @@ export default function Editor() {
                     topRight: { x: d.perspectiveCorners.topRight?.x ?? 1, y: d.perspectiveCorners.topRight?.y ?? 0 },
                     bottomLeft: { x: d.perspectiveCorners.bottomLeft?.x ?? 0, y: d.perspectiveCorners.bottomLeft?.y ?? 1 },
                     bottomRight: { x: d.perspectiveCorners.bottomRight?.x ?? 1, y: d.perspectiveCorners.bottomRight?.y ?? 1 },
+                  }
+                : undefined,
+              wrapHandles: d?.wrapHandles
+                ? {
+                    top: {
+                      start: { x: d.wrapHandles.top?.start?.x ?? 0.25, y: d.wrapHandles.top?.start?.y ?? 0 },
+                      end: { x: d.wrapHandles.top?.end?.x ?? 0.75, y: d.wrapHandles.top?.end?.y ?? 0 },
+                    },
+                    right: {
+                      start: { x: d.wrapHandles.right?.start?.x ?? 1, y: d.wrapHandles.right?.start?.y ?? 0.25 },
+                      end: { x: d.wrapHandles.right?.end?.x ?? 1, y: d.wrapHandles.right?.end?.y ?? 0.75 },
+                    },
+                    bottom: {
+                      start: { x: d.wrapHandles.bottom?.start?.x ?? 0.75, y: d.wrapHandles.bottom?.start?.y ?? 1 },
+                      end: { x: d.wrapHandles.bottom?.end?.x ?? 0.25, y: d.wrapHandles.bottom?.end?.y ?? 1 },
+                    },
+                    left: {
+                      start: { x: d.wrapHandles.left?.start?.x ?? 0, y: d.wrapHandles.left?.start?.y ?? 0.75 },
+                      end: { x: d.wrapHandles.left?.end?.x ?? 0, y: d.wrapHandles.left?.end?.y ?? 0.25 },
+                    },
                   }
                 : undefined,
               sizeTransform: {
@@ -510,15 +670,30 @@ export default function Editor() {
   }, [apiBaseUrl]);
 
   const filteredRightPanelMockups = useMemo(() => {
-    const query = rightPanelSearch.trim().toLowerCase();
+    const query = normalizeSearchText(rightPanelSearch);
     if (!query) return rightPanelMockups;
 
-    return rightPanelMockups.filter((item) => {
-      const categoryText = [item.mainCategory, item.category]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return item.title.toLowerCase().includes(query) || categoryText.includes(query);
+    const searchable = rightPanelMockups.map((item) => ({
+      ...item,
+      searchText: buildSearchText(item),
+    }));
+
+    const fuse = new Fuse(searchable, {
+      keys: [
+        { name: "title", weight: 0.45 },
+        { name: "category", weight: 0.2 },
+        { name: "mainCategory", weight: 0.15 },
+        { name: "searchText", weight: 0.35 },
+      ],
+      threshold: 0.42,
+      distance: 120,
+      ignoreLocation: true,
+      minMatchCharLength: 2,
+    });
+
+    return fuse.search(query).map((result) => {
+      const { searchText, ...mockup } = result.item;
+      return mockup;
     });
   }, [rightPanelMockups, rightPanelSearch]);
 
@@ -583,6 +758,58 @@ export default function Editor() {
       img.src = source;
     });
 
+  const readOpaqueImageBounds = (source: string): Promise<{ x: number; y: number; w: number; h: number; sourceW: number; sourceH: number }> =>
+    new Promise((resolve) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const sourceW = Math.max(1, img.naturalWidth);
+        const sourceH = Math.max(1, img.naturalHeight);
+        const canvas = document.createElement("canvas");
+        canvas.width = sourceW;
+        canvas.height = sourceH;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve({ x: 0, y: 0, w: sourceW, h: sourceH, sourceW, sourceH });
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0);
+        const { data, width, height } = ctx.getImageData(0, 0, sourceW, sourceH);
+        let minX = width;
+        let minY = height;
+        let maxX = -1;
+        let maxY = -1;
+
+        for (let y = 0; y < height; y += 1) {
+          for (let x = 0; x < width; x += 1) {
+            const alpha = data[(y * width + x) * 4 + 3];
+            if (alpha > 16) {
+              if (x < minX) minX = x;
+              if (y < minY) minY = y;
+              if (x > maxX) maxX = x;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+
+        if (maxX < minX || maxY < minY) {
+          resolve({ x: 0, y: 0, w: sourceW, h: sourceH, sourceW, sourceH });
+          return;
+        }
+
+        resolve({
+          x: minX,
+          y: minY,
+          w: maxX - minX + 1,
+          h: maxY - minY + 1,
+          sourceW,
+          sourceH,
+        });
+      };
+      img.onerror = () => resolve({ x: 0, y: 0, w: 1, h: 1, sourceW: 1, sourceH: 1 });
+      img.src = source;
+    });
+
   const handleDesignUpload = (files: FileList | null, areaUrlOverride?: string) => {
     const areaUrl = areaUrlOverride ?? selectedDesignAreaUrl;
     if (!files || !files.length || !areaUrl) return;
@@ -610,6 +837,12 @@ export default function Editor() {
           ...prev,
           [designId]: { w: trimmed.w, h: trimmed.h },
         }));
+        void readOpaqueImageBounds(trimmed.src).then((bounds) => {
+          setDesignOpaqueBoundsById((prev) => ({
+            ...prev,
+            [designId]: bounds,
+          }));
+        });
       };
       reader.readAsDataURL(file);
     });
@@ -650,6 +883,27 @@ export default function Editor() {
             ...prev,
             [designId]: { w: trimmed.w, h: trimmed.h },
           };
+        });
+
+        void readOpaqueImageBounds(trimmed.src).then((bounds) => {
+          setDesignOpaqueBoundsById((prev) => {
+            const existing = prev[designId];
+            if (
+              existing &&
+              existing.x === bounds.x &&
+              existing.y === bounds.y &&
+              existing.w === bounds.w &&
+              existing.h === bounds.h &&
+              existing.sourceW === bounds.sourceW &&
+              existing.sourceH === bounds.sourceH
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [designId]: bounds,
+            };
+          });
         });
       });
     });
@@ -695,6 +949,75 @@ export default function Editor() {
     };
   };
 
+  const getVisibleDesignControlBox = (designId: string, areaUrl?: string | null) => {
+    const t = getDesignTransform(designId);
+    const baseSize = getDesignBaseSize(designId);
+    const boxScale = Math.max(t.scale, MIN_DESIGN_SCALE);
+    const selectedArea = designAreaImages.find((area) => area.url === (areaUrl ?? selectedDesignAreaUrl)) ?? null;
+    const artW = artboardPixelSize?.w ?? artboardCanvasRef.current?.offsetWidth ?? 610;
+    const artH = artboardPixelSize?.h ?? artW;
+    const selectedBottomLayout = selectedArea ? getBottomLayerLayout(selectedArea, artW, artH) : null;
+    const controlRotation = t.rotation + (selectedBottomLayout?.rotation ?? 0);
+    const designCenter = getDesignArtboardCenter(designId, areaUrl);
+
+    return {
+      x: designCenter.x,
+      y: designCenter.y,
+      w: baseSize.w * boxScale,
+      h: baseSize.h * boxScale,
+      rotation: controlRotation,
+    };
+  };
+
+  const getCurrentDesignControlBox = (designId: string, areaUrl?: string | null) =>
+    selectedRenderedDesignBox ?? getVisibleDesignControlBox(designId, areaUrl);
+
+  const captureLiveControlBoxStart = (designId: string, areaUrl?: string | null) => {
+    const t = getDesignTransform(designId);
+    liveControlBoxStart.current = {
+      box: getCurrentDesignControlBox(designId, areaUrl),
+      center: getDesignArtboardCenter(designId, areaUrl),
+      scale: t.scale,
+      rotation: t.rotation,
+    };
+  };
+
+  const getRotatedAabb = (
+    box: { x: number; y: number; w: number; h: number },
+    center: { x: number; y: number },
+    angleDelta: number,
+  ) => {
+    const rad = (angleDelta * Math.PI) / 180;
+    const cosA = Math.cos(rad);
+    const sinA = Math.sin(rad);
+    const halfW = box.w / 2;
+    const halfH = box.h / 2;
+    const corners = [
+      { x: box.x - halfW, y: box.y - halfH },
+      { x: box.x + halfW, y: box.y - halfH },
+      { x: box.x + halfW, y: box.y + halfH },
+      { x: box.x - halfW, y: box.y + halfH },
+    ].map((point) => {
+      const dx = point.x - center.x;
+      const dy = point.y - center.y;
+      return {
+        x: center.x + dx * cosA - dy * sinA,
+        y: center.y + dx * sinA + dy * cosA,
+      };
+    });
+    const minX = Math.min(...corners.map((point) => point.x));
+    const maxX = Math.max(...corners.map((point) => point.x));
+    const minY = Math.min(...corners.map((point) => point.y));
+    const maxY = Math.max(...corners.map((point) => point.y));
+    return {
+      x: (minX + maxX) / 2,
+      y: (minY + maxY) / 2,
+      w: Math.max(1, maxX - minX),
+      h: Math.max(1, maxY - minY),
+      rotation: 0,
+    };
+  };
+
   const getBottomLayerLayout = (area: DesignAreaItem, artW: number, artH: number) => {
     if (!area.sizeImageUrl) return null;
     const t = area.sizeTransform ?? defaultDesignTransform;
@@ -728,6 +1051,183 @@ export default function Editor() {
     };
   };
 
+  const loadCanvasImage = (src: string): Promise<HTMLImageElement> =>
+    new Promise((resolve, reject) => {
+      const img = new window.Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+
+  const scanCanvasAlphaBounds = (canvas: HTMLCanvasElement) => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    let imageData: ImageData;
+    try {
+      imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch {
+      return null;
+    }
+
+    const { data, width, height } = imageData;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const alpha = data[(y * width + x) * 4 + 3];
+        if (alpha > 16) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    if (maxX < minX || maxY < minY) return null;
+    return {
+      x: minX,
+      y: minY,
+      w: maxX - minX + 1,
+      h: maxY - minY + 1,
+    };
+  };
+
+  const renderDesignVisibleBounds = async (area: DesignAreaItem, design: UploadedDesignItem) => {
+    const artW = Math.max(1, Math.round(artboardPixelSize?.w ?? artboardCanvasRef.current?.offsetWidth ?? 610));
+    const artH = Math.max(1, Math.round(artboardPixelSize?.h ?? artW));
+    const t = getDesignTransform(design.id);
+    const baseSize = getDesignBaseSize(design.id);
+    const bottomLayout = getBottomLayerLayout(area, artW, artH);
+    const corners = area.perspectiveCorners ?? DEFAULT_CORNERS;
+    const wrapHandles = area.wrapHandles ?? null;
+    const hasPerspective = !isDefaultCorners(corners);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = artW;
+    canvas.height = artH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    const img = await loadCanvasImage(design.src);
+
+    if (bottomLayout) {
+      const local = artboardToBottomLocal(t.x, t.y, bottomLayout);
+      const layerCanvas = document.createElement("canvas");
+      layerCanvas.width = Math.max(1, Math.round(bottomLayout.boxW));
+      layerCanvas.height = Math.max(1, Math.round(bottomLayout.boxH));
+      const layerCtx = layerCanvas.getContext("2d");
+      if (!layerCtx) return null;
+
+      layerCtx.save();
+      layerCtx.translate(layerCanvas.width / 2 + local.x, layerCanvas.height / 2 + local.y);
+      layerCtx.rotate((t.rotation * Math.PI) / 180);
+      layerCtx.scale(t.scale, t.scale);
+      layerCtx.drawImage(img, -baseSize.w / 2, -baseSize.h / 2, baseSize.w, baseSize.h);
+      layerCtx.restore();
+
+      layerCtx.globalCompositeOperation = "destination-in";
+      const bottomMask = await loadCanvasImage(bottomLayout.maskUrl);
+      layerCtx.drawImage(bottomMask, 0, 0, layerCanvas.width, layerCanvas.height);
+
+      let outputCanvas = layerCanvas;
+      if (wrapHandles) {
+        const warped = document.createElement("canvas");
+        warped.width = layerCanvas.width;
+        warped.height = layerCanvas.height;
+        const warpedCtx = warped.getContext("2d");
+        if (warpedCtx) {
+          drawCanvasBezierMeshWarp(warpedCtx, layerCanvas, corners, wrapHandles, warped.width, warped.height);
+          outputCanvas = warped;
+        }
+      } else if (hasPerspective) {
+        const warped = document.createElement("canvas");
+        warped.width = layerCanvas.width;
+        warped.height = layerCanvas.height;
+        const warpedCtx = warped.getContext("2d");
+        if (warpedCtx) {
+          drawCanvasWarp(warpedCtx, layerCanvas, corners, warped.width, warped.height);
+          outputCanvas = warped;
+        }
+      }
+
+      ctx.save();
+      ctx.translate(artW / 2 + bottomLayout.x, artH / 2 + bottomLayout.y);
+      ctx.rotate((bottomLayout.rotation * Math.PI) / 180);
+      ctx.drawImage(outputCanvas, -outputCanvas.width / 2, -outputCanvas.height / 2);
+      ctx.restore();
+    } else {
+      ctx.save();
+      ctx.translate(artW / 2 + t.x, artH / 2 + t.y);
+      ctx.rotate((t.rotation * Math.PI) / 180);
+      ctx.scale(t.scale, t.scale);
+      ctx.drawImage(img, -baseSize.w / 2, -baseSize.h / 2, baseSize.w, baseSize.h);
+      ctx.restore();
+    }
+
+    ctx.globalCompositeOperation = "destination-in";
+    const areaMask = await loadCanvasImage(area.url);
+    ctx.drawImage(areaMask, 0, 0, artW, artH);
+
+    const bounds = scanCanvasAlphaBounds(canvas);
+    if (!bounds) return null;
+
+    return {
+      x: bounds.x + bounds.w / 2 - artW / 2,
+      y: bounds.y + bounds.h / 2 - artH / 2,
+      w: bounds.w,
+      h: bounds.h,
+      rotation: 0,
+    };
+  };
+
+  useEffect(() => {
+    let isActive = true;
+
+    const selectedArea = designAreaImages.find((area) => area.url === selectedDesignAreaUrl) ?? null;
+    const selectedDesign = getSelectedDesign();
+    if (!selectedArea || !selectedDesign) {
+      setSelectedRenderedDesignBox(null);
+      return () => {
+        isActive = false;
+      };
+    }
+
+    void renderDesignVisibleBounds(selectedArea, selectedDesign)
+      .then((bounds) => {
+        if (
+          isActive &&
+          !isDraggingDesign.current &&
+          !isScalingDesign.current &&
+          !isRotatingDesign.current &&
+          !isPinching.current
+        ) {
+          setSelectedRenderedDesignBox(bounds);
+        }
+      })
+      .catch(() => {
+        if (isActive) setSelectedRenderedDesignBox(null);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [
+    selectedDesignAreaUrl,
+    selectedDesignId,
+    uploadedDesignByArea,
+    designTransformById,
+    designNaturalSizes,
+    designAreaImages,
+    artboardPixelSize,
+    bottomLayerNaturalByAreaId,
+  ]);
+
   const deleteSelectedDesign = () => {
     if (!selectedDesignAreaUrl || !selectedDesignId) return;
     const areaUrl = selectedDesignAreaUrl;
@@ -753,6 +1253,13 @@ export default function Editor() {
       return next;
     });
 
+    setDesignOpaqueBoundsById((prev) => {
+      const next = { ...prev };
+      delete next[designId];
+      return next;
+    });
+    setSelectedRenderedDesignBox(null);
+
     const remainingDesigns = getDesignsForArea(areaUrl).filter((design) => design.id !== designId);
     setSelectedDesignId(remainingDesigns[remainingDesigns.length - 1]?.id ?? null);
     setRotationGuide((prev) => (prev?.designId === designId ? null : prev));
@@ -767,6 +1274,7 @@ export default function Editor() {
     setSelectedDesignAreaUrl(areaUrl);
     setSelectedDesignId(designId);
     setSelectedOverlayId(null);
+    captureLiveControlBoxStart(designId, areaUrl);
 
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     activePinchPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -797,21 +1305,34 @@ export default function Editor() {
     e.preventDefault();
   };
 
+  const getDesignArtboardCenter = (designId: string, areaUrl?: string | null) => {
+    const t = getDesignTransform(designId);
+    const area = designAreaImages.find((item) => item.url === (areaUrl ?? selectedDesignAreaUrl)) ?? null;
+    const artW = artboardPixelSize?.w ?? artboardCanvasRef.current?.offsetWidth ?? 610;
+    const artH = artboardPixelSize?.h ?? artW;
+    const bottomLayout = area ? getBottomLayerLayout(area, artW, artH) : null;
+    if (!bottomLayout) return { x: t.x, y: t.y };
+
+    const local = artboardToBottomLocal(t.x, t.y, bottomLayout);
+    const rad = (bottomLayout.rotation * Math.PI) / 180;
+    const cosA = Math.cos(rad);
+    const sinA = Math.sin(rad);
+    return {
+      x: bottomLayout.x + local.x * cosA - local.y * sinA,
+      y: bottomLayout.y + local.x * sinA + local.y * cosA,
+    };
+  };
+
   const getInteractionCenter = () => {
     const rect = artboardCanvasRef.current?.getBoundingClientRect();
     if (!rect) return null;
-
-    if (selectedDesignId) {
-      const t = getDesignTransform(selectedDesignId);
-      return {
-        x: rect.left + rect.width / 2 + t.x * artboardZoom,
-        y: rect.top + rect.height / 2 + t.y * artboardZoom,
-      };
-    }
+    const offset = selectedDesignId
+      ? selectedRenderedDesignBox ?? getVisibleDesignControlBox(selectedDesignId)
+      : { x: 0, y: 0 };
 
     return {
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2,
+      x: rect.left + rect.width / 2 + offset.x * artboardZoom,
+      y: rect.top + rect.height / 2 + offset.y * artboardZoom,
     };
   };
 
@@ -840,6 +1361,7 @@ export default function Editor() {
     setSelectedDesignAreaUrl(areaUrl);
     setSelectedDesignId(designId);
     setSelectedOverlayId(null);
+    captureLiveControlBoxStart(designId, areaUrl);
     isScalingDesign.current = true;
     designScaleStart.current = {
       distance: Math.max(getDistanceFromCenter(e.clientX, e.clientY), 1),
@@ -857,6 +1379,7 @@ export default function Editor() {
     setSelectedDesignAreaUrl(areaUrl);
     setSelectedDesignId(designId);
     setSelectedOverlayId(null);
+    captureLiveControlBoxStart(designId, areaUrl);
     setRotationGuide({ areaUrl, designId, angle: normalizeAngle(transform.rotation), snapped: false });
     isRotatingDesign.current = true;
     designRotateStart.current = {
@@ -1072,6 +1595,18 @@ export default function Editor() {
           const snappedRotation = getSnappedRotation(rawRotation, DESIGN_ROTATION_SNAP_STEP);
           const did = pinchDesignId.current;
           if (did) {
+            const liveStart = liveControlBoxStart.current;
+            if (liveStart.box) {
+              const ratioFromStart = nextScale / Math.max(liveStart.scale, MIN_DESIGN_SCALE);
+              const scaledBox = {
+                x: liveStart.center.x + (liveStart.box.x - liveStart.center.x) * ratioFromStart,
+                y: liveStart.center.y + (liveStart.box.y - liveStart.center.y) * ratioFromStart,
+                w: Math.max(1, liveStart.box.w * ratioFromStart),
+                h: Math.max(1, liveStart.box.h * ratioFromStart),
+                rotation: 0,
+              };
+              setSelectedRenderedDesignBox(getRotatedAabb(scaledBox, liveStart.center, snappedRotation.angle - liveStart.rotation));
+            }
             setDesignTransformById((prev) => {
               const current = prev[did] ?? defaultDesignTransform;
               return {
@@ -1099,6 +1634,17 @@ export default function Editor() {
         const currentDistance = Math.max(getDistanceFromCenter(e.clientX, e.clientY), 1);
         const ratio = currentDistance / designScaleStart.current.distance;
         const nextScale = clamp(designScaleStart.current.scale * ratio, MIN_DESIGN_SCALE, 3);
+        const liveStart = liveControlBoxStart.current;
+        if (liveStart.box) {
+          const ratioFromStart = nextScale / Math.max(liveStart.scale, MIN_DESIGN_SCALE);
+          setSelectedRenderedDesignBox({
+            x: liveStart.center.x + (liveStart.box.x - liveStart.center.x) * ratioFromStart,
+            y: liveStart.center.y + (liveStart.box.y - liveStart.center.y) * ratioFromStart,
+            w: Math.max(1, liveStart.box.w * ratioFromStart),
+            h: Math.max(1, liveStart.box.h * ratioFromStart),
+            rotation: 0,
+          });
+        }
         setDesignTransformById((prev) => {
           const current = prev[designId] ?? defaultDesignTransform;
           return {
@@ -1119,6 +1665,10 @@ export default function Editor() {
         const angleDelta = currentAngle - designRotateStart.current.angle;
         const rawRotation = designRotateStart.current.rotation + angleDelta;
         const snappedRotation = getSnappedRotation(rawRotation, DESIGN_ROTATION_SNAP_STEP);
+        const liveStart = liveControlBoxStart.current;
+        if (liveStart.box) {
+          setSelectedRenderedDesignBox(getRotatedAabb(liveStart.box, liveStart.center, snappedRotation.angle - liveStart.rotation));
+        }
         setDesignTransformById((prev) => {
           const current = prev[designId] ?? defaultDesignTransform;
           return {
@@ -1139,9 +1689,17 @@ export default function Editor() {
       }
 
       if (isDraggingDesign.current) {
-        const dx = e.clientX - designDragStart.current.mouseX;
-        const dy = e.clientY - designDragStart.current.mouseY;
+        const dx = (e.clientX - designDragStart.current.mouseX) / artboardZoom;
+        const dy = (e.clientY - designDragStart.current.mouseY) / artboardZoom;
         const designId = designDragStart.current.designId;
+        const liveStart = liveControlBoxStart.current;
+        if (liveStart.box) {
+          setSelectedRenderedDesignBox({
+            ...liveStart.box,
+            x: liveStart.box.x + dx,
+            y: liveStart.box.y + dy,
+          });
+        }
         setDesignTransformById((prev) => {
           const current = prev[designId] ?? defaultDesignTransform;
           return {
@@ -1196,6 +1754,11 @@ export default function Editor() {
       setArtboardPos({ x: dragStart.current.posX + dx, y: dragStart.current.posY + dy });
     };
     const onMouseUp = (e: PointerEvent) => {
+      const shouldRefreshDesignBox =
+        isPinching.current ||
+        isDraggingDesign.current ||
+        isScalingDesign.current ||
+        isRotatingDesign.current;
       activePinchPointers.current.delete(e.pointerId);
       if (activePinchPointers.current.size < 2) {
         isPinching.current = false;
@@ -1209,6 +1772,15 @@ export default function Editor() {
       isScalingOverlay.current = false;
       isRotatingOverlay.current = false;
       setRotationGuide(null);
+      if (shouldRefreshDesignBox) {
+        const selectedArea = designAreaImages.find((area) => area.url === selectedDesignAreaUrl) ?? null;
+        const selectedDesign = getSelectedDesign();
+        if (selectedArea && selectedDesign) {
+          void renderDesignVisibleBounds(selectedArea, selectedDesign)
+            .then((bounds) => setSelectedRenderedDesignBox(bounds))
+            .catch(() => setSelectedRenderedDesignBox(null));
+        }
+      }
     };
     window.addEventListener("pointermove", onMouseMove);
     window.addEventListener("pointerup", onMouseUp);
@@ -1218,7 +1790,7 @@ export default function Editor() {
       window.removeEventListener("pointerup", onMouseUp);
       window.removeEventListener("pointercancel", onMouseUp);
     };
-  }, []);
+  }, [artboardZoom, selectedDesignAreaUrl, designAreaImages, artboardPixelSize, bottomLayerNaturalByAreaId]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -1234,7 +1806,38 @@ export default function Editor() {
 
   const handleDownload = async () => {
     if (isDownloading) return;
-    if (requireSigninForExtraDownload()) return;
+    setExportFeedbackMessage(null);
+
+    if (!id) {
+      setExportFeedbackMessage("Product শনাক্ত করা যায়নি. পেজ refresh করে আবার চেষ্টা করুন.");
+      return;
+    }
+
+    try {
+      const authorizeResponse = await fetch(`${apiBaseUrl}/mockups/${id}/downloads/authorize`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (!authorizeResponse.ok) {
+        if (authorizeResponse.status === 401) {
+          setExportFeedbackMessage("প্রথম download হয়ে গেছে. আবার download করতে sign in করুন.");
+          openGuestAccessModal();
+          return;
+        }
+
+        if (authorizeResponse.status === 403) {
+          setExportFeedbackMessage("এই product-এর download currently disabled.");
+          return;
+        }
+
+        setExportFeedbackMessage("Download authorize করা যায়নি. কিছুক্ষণ পরে আবার চেষ্টা করুন.");
+        return;
+      }
+    } catch {
+      setExportFeedbackMessage("Network issue এর কারণে authorize করা যায়নি. আবার চেষ্টা করুন.");
+      return;
+    }
 
     const sizeMap: Record<string, number> = {
       "4000x4000 px": 4000,
@@ -1306,6 +1909,7 @@ export default function Editor() {
         const bottomLayout = getBottomLayerLayout(area, artW, artH);
         const corners = area.perspectiveCorners ?? DEFAULT_CORNERS;
         const hasPerspective = !isDefaultCorners(corners);
+        const wrapHandles = area.wrapHandles ?? null;
         for (const design of areaDesigns) {
           const t = getDesignTransform(design.id);
           const baseSize = getDesignBaseSize(design.id);
@@ -1338,7 +1942,14 @@ export default function Editor() {
               lCtx.drawImage(bottomMask, 0, 0, layerCanvas.width, layerCanvas.height);
 
               let outputCanvas = layerCanvas;
-              if (hasPerspective) {
+              if (wrapHandles) {
+                const warped = document.createElement("canvas");
+                warped.width = layerCanvas.width;
+                warped.height = layerCanvas.height;
+                const wCtx = warped.getContext("2d")!;
+                drawCanvasBezierMeshWarp(wCtx, layerCanvas, corners, wrapHandles, warped.width, warped.height);
+                outputCanvas = warped;
+              } else if (hasPerspective) {
                 const warped = document.createElement("canvas");
                 warped.width = layerCanvas.width;
                 warped.height = layerCanvas.height;
@@ -1416,7 +2027,40 @@ export default function Editor() {
       const quality = exportFormat === "JPEG" ? 0.95 : undefined;
       canvas.toBlob(
         async (blob) => {
-          if (!blob) { setIsDownloading(false); return; }
+          if (!blob) {
+            setExportFeedbackMessage("Export file generate করা যায়নি. আবার চেষ্টা করুন.");
+            setIsDownloading(false);
+            return;
+          }
+
+          try {
+            const confirmResponse = await fetch(`${apiBaseUrl}/mockups/${id}/downloads/confirm`, {
+              method: "POST",
+              credentials: "include",
+            });
+
+            if (!confirmResponse.ok) {
+              if (confirmResponse.status === 401) {
+                setExportFeedbackMessage("Session update হয়েছে. continue করতে sign in করুন.");
+                openGuestAccessModal();
+                setIsDownloading(false);
+                return;
+              }
+              if (confirmResponse.status === 403) {
+                setExportFeedbackMessage("এই product-এর download currently disabled.");
+                setIsDownloading(false);
+                return;
+              }
+              setExportFeedbackMessage("Download confirm করা যায়নি. আবার চেষ্টা করুন.");
+              setIsDownloading(false);
+              return;
+            }
+          } catch {
+            setExportFeedbackMessage("Network issue এর কারণে download confirm করা যায়নি. আবার চেষ্টা করুন.");
+            setIsDownloading(false);
+            return;
+          }
+
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
@@ -1425,32 +2069,8 @@ export default function Editor() {
           a.click();
           document.body.removeChild(a);
           URL.revokeObjectURL(url);
-          markGuestDownloadUsed();
 
-          if (id) {
-            try {
-              await fetch(`${apiBaseUrl}/mockups/${id}/downloads/increment`, {
-                method: "POST",
-              });
-            } catch {
-              // Keep download successful even if counter update fails.
-            }
-          }
-
-          const signedInUser = readAuthUser();
-          if (signedInUser?.email) {
-            try {
-              await fetch(`${apiBaseUrl}/auth/users/downloads/increment`, {
-                method: "POST",
-                credentials: "include",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ mockupId: id || "", productTitle }),
-              });
-            } catch {
-              // Keep download successful even if user counter update fails.
-            }
-          }
-
+          setExportFeedbackMessage(null);
           setIsDownloading(false);
           setIsExportMenuOpen(false);
         },
@@ -1459,6 +2079,7 @@ export default function Editor() {
       );
     } catch (err) {
       console.error("Download failed:", err);
+      setExportFeedbackMessage("Export process চলাকালে error হয়েছে. আবার চেষ্টা করুন.");
       setIsDownloading(false);
     }
   };
@@ -1483,47 +2104,6 @@ export default function Editor() {
   const selectedOverlayRotation = selectedOverlayItem
     ? Math.round(normalizeAngle(selectedOverlayItem.rotation))
     : 0;
-
-  const updateSelectedWorkspaceTransform = (patch: Partial<DesignTransform>) => {
-    if (!selectedDesignId) return;
-    setDesignTransformById((prev) => {
-      const current = prev[selectedDesignId] ?? defaultDesignTransform;
-      return {
-        ...prev,
-        [selectedDesignId]: {
-          ...current,
-          ...patch,
-        },
-      };
-    });
-  };
-
-  const resetSelectedWorkspaceTransform = () => {
-    if (!selectedDesignId) return;
-    setDesignTransformById((prev) => ({
-      ...prev,
-      [selectedDesignId]: defaultDesignTransform,
-    }));
-    setRotationGuide(null);
-  };
-
-  const updateSelectedOverlay = (patch: Partial<OverlayItem>) => {
-    if (!selectedOverlayId) return;
-    setOverlayItems((prev) => prev.map((item) => (
-      item.id === selectedOverlayId
-        ? { ...item, ...patch }
-        : item
-    )));
-  };
-
-  const resetSelectedOverlayTransform = () => {
-    if (!selectedOverlayId) return;
-    setOverlayItems((prev) => prev.map((item) => (
-      item.id === selectedOverlayId
-        ? { ...item, x: 0, y: 0, scale: 1, rotation: 0 }
-        : item
-    )));
-  };
 
   const setSelectedWorkspaceScalePercent = (nextPercent: number) => {
     if (!selectedDesignId) return;
@@ -1586,6 +2166,8 @@ export default function Editor() {
     setUploadedDesignByArea({});
     setDesignTransformById({});
     setDesignNaturalSizes({});
+    setDesignOpaqueBoundsById({});
+    setSelectedRenderedDesignBox(null);
     setSelectedDesignId(null);
     setSelectedDesignAreaUrl(null);
     setRotationGuide(null);
@@ -1719,7 +2301,10 @@ export default function Editor() {
             <div ref={exportMenuRef} className="relative flex w-full justify-end gap-2 md:w-auto">
             <button
               type="button"
-              onClick={() => setIsExportMenuOpen((prev) => !prev)}
+              onClick={() => {
+                setExportFeedbackMessage(null);
+                setIsExportMenuOpen((prev) => !prev);
+              }}
               className="flex h-10 w-full items-center justify-center gap-1.5 rounded-sm bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 md:w-auto md:justify-center"
             >
               Export
@@ -1777,6 +2362,12 @@ export default function Editor() {
                     </button>
                   ))}
                 </div>
+
+                {exportFeedbackMessage ? (
+                  <p className="mb-3 rounded-md border border-red-500/35 bg-red-500/10 px-2.5 py-2 text-xs text-red-200">
+                    {exportFeedbackMessage}
+                  </p>
+                ) : null}
 
                 <button
                   type="button"
@@ -2135,12 +2726,14 @@ export default function Editor() {
               const bottomLayout = getBottomLayerLayout(area, artW, artH);
               const corners = area.perspectiveCorners ?? DEFAULT_CORNERS;
               const hasPerspective = !isDefaultCorners(corners);
+              const hasWrap = Boolean(area.wrapHandles);
               return areaDesigns.map((design, designIdx) => {
                 const transform = getDesignTransform(design.id);
                 const baseSize = getDesignBaseSize(design.id);
                 const localOffset = bottomLayout
                   ? artboardToBottomLocal(transform.x, transform.y, bottomLayout)
                   : null;
+                const useCanvasSurface = Boolean(bottomLayout && (hasPerspective || hasWrap));
                 const innerContent = (
                   <>
                     <img
@@ -2163,13 +2756,14 @@ export default function Editor() {
                         objectFit: "contain",
                         pointerEvents: "auto",
                         cursor: selectedDesignId === design.id ? "move" : "pointer",
+                        opacity: useCanvasSurface ? 0 : 1,
                         userSelect: "none",
                         touchAction: "none",
                         transform: `translate(-50%, -50%) translate(${localOffset?.x ?? transform.x}px, ${localOffset?.y ?? transform.y}px) scale(${transform.scale}) rotate(${transform.rotation}deg)`,
                         transformOrigin: "center center",
                       }}
                     />
-                    {designWrapperStrength > 0 ? (
+                    {designWrapperStrength > 0 && !useCanvasSurface ? (
                       <img
                         src={design.src}
                         alt=""
@@ -2232,16 +2826,26 @@ export default function Editor() {
                           maskPosition: "center",
                         }}
                       >
-                        <div
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            transformOrigin: "0 0",
-                            transform: hasPerspective ? computeMatrix3dStyle(corners, bottomLayout.boxW, bottomLayout.boxH) : undefined,
-                          }}
-                        >
-                          {innerContent}
-                        </div>
+                        {useCanvasSurface ? (
+                          <WarpedDesignPreview
+                            src={design.src}
+                            alt={area.label}
+                            artW={artW}
+                            artH={artH}
+                            boxW={bottomLayout.boxW}
+                            boxH={bottomLayout.boxH}
+                            localX={localOffset?.x ?? transform.x}
+                            localY={localOffset?.y ?? transform.y}
+                            width={baseSize.w}
+                            height={baseSize.h}
+                            scale={transform.scale}
+                            rotation={transform.rotation}
+                            corners={corners}
+                            wrapHandles={area.wrapHandles ?? null}
+                            wrapperStrength={designWrapperStrength}
+                          />
+                        ) : null}
+                        {innerContent}
                       </div>
                     ) : (
                       innerContent
@@ -2253,30 +2857,12 @@ export default function Editor() {
 
             <div style={{ position: "absolute", inset: 0, zIndex: 999999, pointerEvents: "none" }}>
               {selectedDesignAreaUrl && selectedDesignId && getSelectedDesign() ? (() => {
-                const t = getDesignTransform(selectedDesignId);
-              const baseSize = getDesignBaseSize(selectedDesignId);
-              const bbW = baseSize.w;
-              const bbH = baseSize.h;
-              const boxScale = Math.max(t.scale, 0.01);
-              const boxW = bbW * boxScale;
-              const boxH = bbH * boxScale;
-              const selectedArea = designAreaImages.find((area) => area.url === selectedDesignAreaUrl) ?? null;
-              const artW = artboardPixelSize?.w ?? artboardCanvasRef.current?.offsetWidth ?? 610;
-              const artH = artboardPixelSize?.h ?? artboardCanvasRef.current?.offsetHeight ?? artW;
-              const selectedBottomLayout = selectedArea ? getBottomLayerLayout(selectedArea, artW, artH) : null;
-              const selectedLocalOffset = selectedBottomLayout
-                ? artboardToBottomLocal(t.x, t.y, selectedBottomLayout)
-                : null;
-              const bottomRad = ((selectedBottomLayout?.rotation ?? 0) * Math.PI) / 180;
-              const cosB = Math.cos(bottomRad);
-              const sinB = Math.sin(bottomRad);
-              const controlOffsetX = selectedBottomLayout && selectedLocalOffset
-                ? selectedBottomLayout.x + selectedLocalOffset.x * cosB - selectedLocalOffset.y * sinB
-                : t.x;
-              const controlOffsetY = selectedBottomLayout && selectedLocalOffset
-                ? selectedBottomLayout.y + selectedLocalOffset.x * sinB + selectedLocalOffset.y * cosB
-                : t.y;
-              const controlRotation = t.rotation + (selectedBottomLayout?.rotation ?? 0);
+              const controlBox = selectedRenderedDesignBox ?? getVisibleDesignControlBox(selectedDesignId, selectedDesignAreaUrl);
+              const boxW = controlBox.w;
+              const boxH = controlBox.h;
+              const controlOffsetX = controlBox.x;
+              const controlOffsetY = controlBox.y;
+              const controlRotation = controlBox.rotation;
               const showRotationGuide = rotationGuide?.areaUrl === selectedDesignAreaUrl && rotationGuide.designId === selectedDesignId;
               return (
                 <div

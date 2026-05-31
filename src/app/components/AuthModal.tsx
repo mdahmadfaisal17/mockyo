@@ -23,7 +23,7 @@ export default function AuthModal() {
   const [successMessage, setSuccessMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  const googleClientId = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "").trim();
 
   useEffect(() => {
     const openHandler = (event: Event) => {

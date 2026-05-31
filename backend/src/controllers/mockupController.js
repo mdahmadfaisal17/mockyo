@@ -1,10 +1,12 @@
 import Mockup from "../models/mockupModel.js";
 import Subscriber from "../models/subscriberModel.js";
 import User from "../models/userModel.js";
+import GuestDownloadTracker from "../models/guestDownloadTrackerModel.js";
 import asyncHandler from "../utils/asyncHandler.js";
 import { uploadBufferToCloudinary } from "../utils/cloudinaryUpload.js";
 import { sendNewMockupEmail } from "../utils/email.js";
 import { getR2EndpointHost, getR2ObjectFromInput, resolveR2ObjectKeyFromInput, getR2PresignedUrl } from "../utils/r2SignedUrl.js";
+import crypto from "crypto";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 
@@ -57,6 +59,15 @@ const toAssetItem = async (file, folder, labelPrefix) => {
   };
 };
 
+const toPlainAsset = (asset, labelFallback) => {
+  if (!asset?.url) return null;
+  return {
+    label: asset.label || labelFallback || "asset",
+    url: asset.url,
+    publicId: asset.publicId || "",
+  };
+};
+
 const parseBlendModes = (input) => {
   if (!input) return [];
   try {
@@ -73,6 +84,8 @@ const parseBlendModes = (input) => {
 const USER_AUTH_COOKIE = "mockyo_user_token";
 const ADMIN_AUTH_COOKIE = "mockyo_admin_token";
 
+const getTodayDownloadKey = () => new Date().toISOString().slice(0, 10);
+
 const readCookie = (cookieHeader, key) => {
   const target = `${key}=`;
   return String(cookieHeader || "")
@@ -80,6 +93,64 @@ const readCookie = (cookieHeader, key) => {
     .map((part) => part.trim())
     .find((part) => part.startsWith(target))
     ?.slice(target.length) || "";
+};
+
+const getRequestIp = (req) => {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").trim();
+  if (forwarded) {
+    return forwarded.split(",")[0].trim();
+  }
+  return String(req.ip || req.socket?.remoteAddress || "").trim() || "unknown";
+};
+
+const buildGuestFingerprint = (req) => {
+  const ip = getRequestIp(req);
+  const userAgent = String(req.headers["user-agent"] || "").trim().slice(0, 512);
+  return crypto.createHash("sha256").update(`${ip}|${userAgent}`).digest("hex");
+};
+
+const enforceDailyGuestDownloadLimit = async (req) => {
+  const authenticatedEmail = getAuthenticatedUserEmailFromRequest(req);
+  if (authenticatedEmail) {
+    return authenticatedEmail;
+  }
+
+  const today = getTodayDownloadKey();
+  const fingerprint = buildGuestFingerprint(req);
+  const expiresAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+
+  try {
+    // Unique key guarantees only one guest download per day for the same fingerprint.
+    await GuestDownloadTracker.create({ dateKey: today, fingerprint, expiresAt });
+  } catch (error) {
+    if (error?.code === 11000) {
+      const duplicateError = new Error("Please sign in to continue downloading.");
+      duplicateError.statusCode = 401;
+      throw duplicateError;
+    }
+    throw error;
+  }
+
+  return "";
+};
+
+const ensureGuestCanDownload = async (req) => {
+  const authenticatedEmail = getAuthenticatedUserEmailFromRequest(req);
+  if (authenticatedEmail) {
+    return authenticatedEmail;
+  }
+
+  const today = getTodayDownloadKey();
+  const fingerprint = buildGuestFingerprint(req);
+  const alreadyUsed = await GuestDownloadTracker.exists({ dateKey: today, fingerprint });
+
+  if (alreadyUsed) {
+    const duplicateError = new Error("Please sign in to continue downloading.");
+    duplicateError.statusCode = 401;
+    throw duplicateError;
+  }
+
+  return "";
 };
 
 const isAdminRequest = (req) => {
@@ -221,6 +292,7 @@ export const createMockup = asyncHandler(async (req, res) => {
           ? await toAssetItem(uploadedFiles[entry.fileIndex], `${baseFolder}/design-area-images`, entry.label || `design-area-${i + 1}`)
           : { label: entry.label || `design-area-${i + 1}`, url: entry.url, publicId: "" };
         if (entry.perspectiveCorners) base.perspectiveCorners = entry.perspectiveCorners;
+        if (entry.wrapHandles) base.wrapHandles = entry.wrapHandles;
         if (entry.sizeTransform) base.sizeTransform = entry.sizeTransform;
         if (entry.sizeImageFileIndex !== undefined && sizeFiles[entry.sizeImageFileIndex]) {
           const sizeAsset = await toAssetItem(sizeFiles[entry.sizeImageFileIndex], `${baseFolder}/size-images`, `size-${i + 1}`);
@@ -287,6 +359,57 @@ export const createMockup = asyncHandler(async (req, res) => {
     );
   }
 
+  const firstArtboardLayer = artboardLayers[0] || null;
+  const topNormalArtboardLayer = [...artboardLayers].reverse().find((layer) => layer.blendMode === "normal") || null;
+  const firstArtboardLayerByMode = (mode) => artboardLayers.find((layer) => layer.blendMode === mode) || null;
+
+  const [
+    primaryBaseUpload,
+    primaryOverlayUpload,
+    frontBaseMockup,
+    frontOverlayImage,
+    backBaseMockup,
+    backOverlayImage,
+    multiplyUpload,
+    screenUpload,
+    overlayUpload,
+    designAreaBody,
+    designAreaLeftSleeve,
+    designAreaRightSleeve,
+    colorAreaBody,
+    colorAreaSleeves,
+    colorAreaCollar,
+  ] = await Promise.all([
+    uploadSingleAsset("primaryBaseMockup", `${baseFolder}/views/primary`, "primary-base-mockup"),
+    uploadSingleAsset("primaryOverlayImage", `${baseFolder}/views/primary`, "primary-overlay-image"),
+    uploadSingleAsset("frontBaseMockup", `${baseFolder}/views/front`, "front-base-mockup"),
+    uploadSingleAsset("frontOverlayImage", `${baseFolder}/views/front`, "front-overlay-image"),
+    uploadSingleAsset("backBaseMockup", `${baseFolder}/views/back`, "back-base-mockup"),
+    uploadSingleAsset("backOverlayImage", `${baseFolder}/views/back`, "back-overlay-image"),
+    uploadSingleLayer("multiply"),
+    uploadSingleLayer("screen"),
+    uploadSingleLayer("overlay"),
+    uploadSingleAsset("designAreaBody", `${baseFolder}/design-areas`, "body"),
+    uploadSingleAsset("designAreaLeftSleeve", `${baseFolder}/design-areas`, "left-sleeve"),
+    uploadSingleAsset("designAreaRightSleeve", `${baseFolder}/design-areas`, "right-sleeve"),
+    uploadSingleAsset("colorAreaBody", `${baseFolder}/color-areas`, "body"),
+    uploadSingleAsset("colorAreaSleeves", `${baseFolder}/color-areas`, "sleeves"),
+    uploadSingleAsset("colorAreaCollar", `${baseFolder}/color-areas`, "collar"),
+  ]);
+
+  const primaryBaseMockup =
+    primaryBaseUpload ||
+    toPlainAsset(firstArtboardLayer, "primary-base-mockup") ||
+    toPlainAsset(thumbnails[0], "primary-base-mockup") ||
+    null;
+  const primaryOverlayImage =
+    primaryOverlayUpload ||
+    toPlainAsset(topNormalArtboardLayer, "primary-overlay-image") ||
+    null;
+  const multiply = multiplyUpload || toPlainAsset(firstArtboardLayerByMode("multiply"), "multiply");
+  const screen = screenUpload || toPlainAsset(firstArtboardLayerByMode("screen"), "screen");
+  const overlay = overlayUpload || toPlainAsset(firstArtboardLayerByMode("overlay"), "overlay");
+
   const mockup = await Mockup.create({
     title,
     category,
@@ -302,80 +425,28 @@ export const createMockup = asyncHandler(async (req, res) => {
     defaultImages,
     views: {
       primary: {
-        baseMockup: await uploadSingleAsset(
-          "primaryBaseMockup",
-          `${baseFolder}/views/primary`,
-          "primary-base-mockup",
-        ),
-        overlayImage: await uploadSingleAsset(
-          "primaryOverlayImage",
-          `${baseFolder}/views/primary`,
-          "primary-overlay-image",
-        ),
+        baseMockup: primaryBaseMockup,
+        overlayImage: primaryOverlayImage,
       },
       front: {
-        baseMockup: await uploadSingleAsset(
-          "frontBaseMockup",
-          `${baseFolder}/views/front`,
-          "front-base-mockup",
-        ),
-        overlayImage: await uploadSingleAsset(
-          "frontOverlayImage",
-          `${baseFolder}/views/front`,
-          "front-overlay-image",
-        ),
+        baseMockup: frontBaseMockup,
+        overlayImage: frontOverlayImage,
       },
       back: {
-        baseMockup: await uploadSingleAsset(
-          "backBaseMockup",
-          `${baseFolder}/views/back`,
-          "back-base-mockup",
-        ),
-        overlayImage: await uploadSingleAsset(
-          "backOverlayImage",
-          `${baseFolder}/views/back`,
-          "back-overlay-image",
-        ),
+        baseMockup: backBaseMockup,
+        overlayImage: backOverlayImage,
       },
     },
-    blendLayers: {
-      multiply: await uploadSingleLayer("multiply"),
-      screen: await uploadSingleLayer("screen"),
-      overlay: await uploadSingleLayer("overlay"),
-    },
+    blendLayers: { multiply, screen, overlay },
     designAreas: {
-      body: await uploadSingleAsset(
-        "designAreaBody",
-        `${baseFolder}/design-areas`,
-        "body",
-      ),
-      leftSleeve: await uploadSingleAsset(
-        "designAreaLeftSleeve",
-        `${baseFolder}/design-areas`,
-        "left-sleeve",
-      ),
-      rightSleeve: await uploadSingleAsset(
-        "designAreaRightSleeve",
-        `${baseFolder}/design-areas`,
-        "right-sleeve",
-      ),
+      body: designAreaBody,
+      leftSleeve: designAreaLeftSleeve,
+      rightSleeve: designAreaRightSleeve,
     },
     colorAreas: {
-      body: await uploadSingleAsset(
-        "colorAreaBody",
-        `${baseFolder}/color-areas`,
-        "body",
-      ),
-      sleeves: await uploadSingleAsset(
-        "colorAreaSleeves",
-        `${baseFolder}/color-areas`,
-        "sleeves",
-      ),
-      collar: await uploadSingleAsset(
-        "colorAreaCollar",
-        `${baseFolder}/color-areas`,
-        "collar",
-      ),
+      body: colorAreaBody,
+      sleeves: colorAreaSleeves,
+      collar: colorAreaCollar,
     },
   });
 
@@ -483,34 +554,65 @@ export const updateMockup = asyncHandler(async (req, res) => {
     nextArtboardLayers = mockup.artboardLayers;
   }
 
+  const hasNewArtboardLayers = (files.artboardLayers || []).length > 0;
+  const hasNewThumbnails = (files.thumbnails || []).length > 0;
+  const firstArtboardLayer = nextArtboardLayers[0] || null;
+  const topNormalArtboardLayer = [...nextArtboardLayers].reverse().find((layer) => layer.blendMode === "normal") || null;
+  const firstArtboardLayerByMode = (mode) => nextArtboardLayers.find((layer) => layer.blendMode === mode) || null;
+
+  const [
+    primaryBaseUpload,
+    primaryOverlayUpload,
+    frontBaseUpload,
+    frontOverlayUpload,
+    backBaseUpload,
+    backOverlayUpload,
+    multiplyUpload,
+    screenUpload,
+    overlayUpload,
+  ] = await Promise.all([
+    uploadSingleAsset("primaryBaseMockup", `${baseFolder}/views/primary`, "primary-base-mockup"),
+    uploadSingleAsset("primaryOverlayImage", `${baseFolder}/views/primary`, "primary-overlay-image"),
+    uploadSingleAsset("frontBaseMockup", `${baseFolder}/views/front`, "front-base-mockup"),
+    uploadSingleAsset("frontOverlayImage", `${baseFolder}/views/front`, "front-overlay-image"),
+    uploadSingleAsset("backBaseMockup", `${baseFolder}/views/back`, "back-base-mockup"),
+    uploadSingleAsset("backOverlayImage", `${baseFolder}/views/back`, "back-overlay-image"),
+    uploadSingleLayer("multiply"),
+    uploadSingleLayer("screen"),
+    uploadSingleLayer("overlay"),
+  ]);
+
   const primaryBaseMockup =
-    (await uploadSingleAsset("primaryBaseMockup", `${baseFolder}/views/primary`, "primary-base-mockup")) ||
+    primaryBaseUpload ||
+    (hasNewArtboardLayers || hasNewThumbnails
+      ? toPlainAsset(firstArtboardLayer, "primary-base-mockup") || toPlainAsset(nextThumbnails[0], "primary-base-mockup")
+      : null) ||
     mockup.views?.primary?.baseMockup ||
     null;
   const primaryOverlayImage =
-    (await uploadSingleAsset("primaryOverlayImage", `${baseFolder}/views/primary`, "primary-overlay-image")) ||
+    primaryOverlayUpload ||
+    (hasNewArtboardLayers ? toPlainAsset(topNormalArtboardLayer, "primary-overlay-image") : null) ||
     mockup.views?.primary?.overlayImage ||
     null;
-  const frontBaseMockup =
-    (await uploadSingleAsset("frontBaseMockup", `${baseFolder}/views/front`, "front-base-mockup")) ||
-    mockup.views?.front?.baseMockup ||
+  const frontBaseMockup = frontBaseUpload || mockup.views?.front?.baseMockup || null;
+  const frontOverlayImage = frontOverlayUpload || mockup.views?.front?.overlayImage || null;
+  const backBaseMockup = backBaseUpload || mockup.views?.back?.baseMockup || null;
+  const backOverlayImage = backOverlayUpload || mockup.views?.back?.overlayImage || null;
+  const multiply =
+    multiplyUpload ||
+    (hasNewArtboardLayers ? toPlainAsset(firstArtboardLayerByMode("multiply"), "multiply") : null) ||
+    mockup.blendLayers?.multiply ||
     null;
-  const frontOverlayImage =
-    (await uploadSingleAsset("frontOverlayImage", `${baseFolder}/views/front`, "front-overlay-image")) ||
-    mockup.views?.front?.overlayImage ||
+  const screen =
+    screenUpload ||
+    (hasNewArtboardLayers ? toPlainAsset(firstArtboardLayerByMode("screen"), "screen") : null) ||
+    mockup.blendLayers?.screen ||
     null;
-  const backBaseMockup =
-    (await uploadSingleAsset("backBaseMockup", `${baseFolder}/views/back`, "back-base-mockup")) ||
-    mockup.views?.back?.baseMockup ||
+  const overlay =
+    overlayUpload ||
+    (hasNewArtboardLayers ? toPlainAsset(firstArtboardLayerByMode("overlay"), "overlay") : null) ||
+    mockup.blendLayers?.overlay ||
     null;
-  const backOverlayImage =
-    (await uploadSingleAsset("backOverlayImage", `${baseFolder}/views/back`, "back-overlay-image")) ||
-    mockup.views?.back?.overlayImage ||
-    null;
-
-  const multiply = (await uploadSingleLayer("multiply")) || mockup.blendLayers?.multiply || null;
-  const screen = (await uploadSingleLayer("screen")) || mockup.blendLayers?.screen || null;
-  const overlay = (await uploadSingleLayer("overlay")) || mockup.blendLayers?.overlay || null;
 
   // designAreaImages for update
   let nextDesignAreaImages;
@@ -525,6 +627,7 @@ export const updateMockup = asyncHandler(async (req, res) => {
           ? await toAssetItem(uploadedFiles[entry.fileIndex], `${baseFolder}/design-area-images`, entry.label || `design-area-${i + 1}`)
           : { label: entry.label || `design-area-${i + 1}`, url: entry.url, publicId: "" };
         if (entry.perspectiveCorners) base.perspectiveCorners = entry.perspectiveCorners;
+        if (entry.wrapHandles) base.wrapHandles = entry.wrapHandles;
         if (entry.sizeTransform) base.sizeTransform = entry.sizeTransform;
         if (entry.sizeImageFileIndex !== undefined && sizeFiles[entry.sizeImageFileIndex]) {
           const sizeAsset = await toAssetItem(sizeFiles[entry.sizeImageFileIndex], `${baseFolder}/size-images`, `size-${i + 1}`);
@@ -710,6 +813,8 @@ export const getDownloadPresignedUrl = asyncHandler(async (req, res) => {
     throw error;
   }
 
+  const authenticatedEmail = await enforceDailyGuestDownloadLimit(req);
+
   const objectKey = String(mockup.objectKey || "").trim();
   if (!objectKey) {
     const error = new Error("No object key configured for this mockup.");
@@ -730,7 +835,6 @@ export const getDownloadPresignedUrl = asyncHandler(async (req, res) => {
     await Mockup.findByIdAndUpdate(mockupId, { $inc: { downloads: 1 } });
 
     // Track user download if authenticated
-    const authenticatedEmail = getAuthenticatedUserEmailFromRequest(req);
     if (authenticatedEmail) {
       let pTitle = String(mockup.title || "").trim();
       let userRecord = await User.findOne({ email: authenticatedEmail }).lean();
@@ -788,6 +892,8 @@ export const downloadFile = asyncHandler(async (req, res) => {
     throw error;
   }
 
+  const authenticatedEmail = await enforceDailyGuestDownloadLimit(req);
+
   let sourceUrl = downloadSource;
 
   // Check if the URL points to R2 — if so, stream directly via SDK (presigned URLs
@@ -815,7 +921,6 @@ export const downloadFile = asyncHandler(async (req, res) => {
     if (typeof mockupId === "string" && mongoose.Types.ObjectId.isValid(mockupId)) {
       await Mockup.findByIdAndUpdate(mockupId, { $inc: { downloads: 1 } });
     }
-    const authenticatedEmail = getAuthenticatedUserEmailFromRequest(req);
     if (authenticatedEmail) {
       let pTitle = typeof req.query.productTitle === "string" ? req.query.productTitle.trim() : "";
       const mId = typeof mockupId === "string" ? mockupId.trim() : "";
@@ -925,7 +1030,7 @@ export const downloadFile = asyncHandler(async (req, res) => {
   }
 });
 
-export const incrementMockupDownloads = asyncHandler(async (req, res) => {
+export const authorizeMockupDownload = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -933,6 +1038,52 @@ export const incrementMockupDownloads = asyncHandler(async (req, res) => {
     error.statusCode = 400;
     throw error;
   }
+
+  ensureDatabaseReady();
+  const mockup = await Mockup.findById(id).select("title downloadEnabled").lean();
+
+  if (!mockup) {
+    const error = new Error("Mockup not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (mockup.downloadEnabled === false) {
+    const error = new Error("Download is disabled for this product.");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  await ensureGuestCanDownload(req);
+
+  res.json({ ok: true });
+});
+
+export const confirmMockupDownload = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    const error = new Error("Invalid mockup id.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  ensureDatabaseReady();
+  const mockup = await Mockup.findById(id).select("title downloadEnabled").lean();
+
+  if (!mockup) {
+    const error = new Error("Mockup not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (mockup.downloadEnabled === false) {
+    const error = new Error("Download is disabled for this product.");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const authenticatedEmail = await enforceDailyGuestDownloadLimit(req);
 
   const updated = await Mockup.findByIdAndUpdate(
     id,
@@ -946,5 +1097,18 @@ export const incrementMockupDownloads = asyncHandler(async (req, res) => {
     throw error;
   }
 
+  if (authenticatedEmail) {
+    const pTitle = String(mockup.title || "").trim() || "Unknown";
+    await User.findOneAndUpdate(
+      { email: authenticatedEmail },
+      {
+        $inc: { totalDownloads: 1 },
+        $push: { downloads: { mockupId: id, productTitle: pTitle, downloadedAt: new Date() } },
+      },
+    );
+  }
+
   res.json({ ok: true, downloads: updated.downloads });
 });
+
+export const incrementMockupDownloads = confirmMockupDownload;
