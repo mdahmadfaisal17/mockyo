@@ -1,16 +1,16 @@
 {
   "rewrites": [
     {
+      "source": "/sitemap.xml",
+      "destination": "https://mockyo.onrender.com/sitemap.xml"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://mockyo.onrender.com/api/:path*"
+    },
+    {
       "source": "/:path*",
       "destination": "/index.html"
-    }
-  ],
-  "redirects": [
-    {
-      "source": "(.*)",
-      "has": [{ "type": "host", "value": "www.mockyo.com" }],
-      "destination": "https://mockyo.com/$1",
-      "statusCode": 301
     }
   ]
 }
