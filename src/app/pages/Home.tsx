@@ -311,7 +311,7 @@ export default function Home() {
             </div>
 
             <h1 className="mb-6 text-3xl sm:text-5xl lg:text-[4.55rem] leading-[1.1] lg:leading-[1.05]">
-              Create Professional Mockups in Seconds
+              Create Professional Mockups in Seconds with Mockyo
             </h1>
 
             <p className="text-base sm:text-xl font-[300] text-foreground/90 mb-8 max-w-2xl mx-auto">

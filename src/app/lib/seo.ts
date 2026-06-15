@@ -5,7 +5,17 @@ const DEFAULT_OG_IMAGE_PATH = "/og-image.svg";
 
 const toAbsoluteUrl = (inputPath: string) => {
   if (!inputPath) return SITE_URL;
-  if (/^https?:\/\//i.test(inputPath)) return inputPath;
+  if (/^https?:\/\//i.test(inputPath)) {
+    // Normalize host to canonical site URL for absolute URLs
+    try {
+      const url = new URL(inputPath);
+      url.hostname = new URL(SITE_URL).hostname;
+      url.protocol = new URL(SITE_URL).protocol;
+      return url.toString().replace(/\/+$/, "");
+    } catch {
+      return inputPath;
+    }
+  }
   return `${SITE_URL}${inputPath.startsWith("/") ? "" : "/"}${inputPath}`;
 };
 
@@ -21,6 +31,11 @@ const upsertMeta = (attr: "name" | "property", key: string, content: string) => 
 
 export const setCanonical = (pathname: string) => {
   const href = toAbsoluteUrl(pathname || "/");
+  // Ensure only a single canonical tag exists
+  const existing = Array.from(document.head.querySelectorAll('link[rel="canonical"]'));
+  existing.forEach((el, idx) => {
+    if (idx > 0) el.remove();
+  });
   let link = document.head.querySelector<HTMLLinkElement>('link[rel="canonical"]');
   if (!link) {
     link = document.createElement("link");
